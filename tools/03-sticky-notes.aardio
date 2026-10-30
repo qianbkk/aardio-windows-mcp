@@ -1,0 +1,257 @@
+﻿//===================================================================
+// 工具03: 桌面便签 (Sticky Notes)
+// 功能: 多便签/自动保存/可调透明度/可置顶
+//===================================================================
+
+import win.ui;
+import fsys.ini;
+import time;
+import JSON;
+import win.util.tray;
+
+var dataFile = io.appData("/aardio-sticky-notes/notes.json");
+
+// 加载便签
+var notes = {};
+if(fsys.isFile(dataFile)){
+    try{
+        var content = string.load(dataFile);
+        if(content) notes = JSON.parse(content);
+    }
+}
+
+if(!notes.list) notes = {list={}};
+if(!notes.nextId) notes.nextId = 1;
+
+// 颜色调色板
+var colors = {
+    "黄色" = 0xFFFF99;
+    "粉色" = 0xFFCCFF;
+    "蓝色" = 0x99CCFF;
+    "绿色" = 0x99FF99;
+    "橙色" = 0xFFCC99;
+    "白色" = 0xFFFFFF;
+}
+
+var saveNotes = function(){
+    if(!fsys.isDir(fsys.getParentDir(dataFile))) fsys.createDir(fsys.getParentDir(dataFile));
+    string.save(dataFile, JSON.stringify(notes, true), false);
+}
+
+// 单个便签窗口
+var noteWindows = {};
+var createNote = function(noteData){
+    if(!noteData) noteData = {};
+    if(!noteData.id){
+        noteData.id = notes.nextId;
+        notes.nextId = notes.nextId + 1;
+        noteData.x = 100 + (notes.nextId * 30) % 500;
+        noteData.y = 100 + (notes.nextId * 30) % 400;
+        noteData.w = 280;
+        noteData.h = 240;
+        noteData.color = "黄色";
+        noteData.text = "新建便签 #" ++ noteData.id;
+        noteData.pinned = false;
+        noteData.transparent = 220;
+        table.push(notes.list, noteData);
+        saveNotes();
+    }
+    if(!noteData.color) noteData.color = "黄色";
+    if(!noteData.text) noteData.text = "";
+    if(!noteData.w) noteData.w = 280;
+    if(!noteData.h) noteData.h = 240;
+
+    var bgcolor = colors[noteData.color] || 0xFFFF99;
+
+    var w = win.form(text="便签 #" ++ noteData.id;right=noteData.w;bottom=noteData.h;border="thin")
+    w.setPos(noteData.x, noteData.y);
+    w.bgcolor = bgcolor;
+    w.transparent = noteData.transparent || 220;
+    w.show(false);
+    w.topmost(noteData.pinned);
+
+    w.add(
+edit={cls="edit";text=noteData.text;left=2;top=2;right=noteData.w-2;bottom=noteData.h-2;bgcolor=bgcolor;edge=1;multiline=1;vscroll=1;z=1}
+    )
+
+    // 文本变化 → 保存
+    w.edit.onChange = function(){
+        noteData.text = w.edit.text;
+        saveNotes();
+    }
+
+    // 颜色菜单
+    import win.ui.menu;
+    w.popmenu = win.ui.popmenu(w);
+    for(name, color in colors){
+        w.popmenu.add("颜色: " ++ name, function(arg){
+            noteData.color = arg;
+            var c = colors[arg];
+            w.bgcolor = c;
+            w.edit.bgcolor = c;
+            w.redraw();
+            saveNotes();
+        }, name);
+    }
+    w.popmenu.add();
+    w.popmenu.add("置顶 / 取消置顶", function(){
+        noteData.pinned = !noteData.pinned;
+        w.topmost(noteData.pinned);
+    });
+    w.popmenu.add("调透明度 +", function(){
+        noteData.transparent = (noteData.transparent || 220) + 20;
+        if(noteData.transparent > 255) noteData.transparent = 255;
+        w.transparent = noteData.transparent;
+    });
+    w.popmenu.add("调透明度 -", function(){
+        noteData.transparent = (noteData.transparent || 220) - 20;
+        if(noteData.transparent < 50) noteData.transparent = 50;
+        w.transparent = noteData.transparent;
+    });
+    w.popmenu.add();
+    w.popmenu.add("关闭便签", function(){
+        if(w.msgbox("删除这个便签?", "确认", 0x24) == 6){
+            // 从 notes.list 删除
+            for(i=1; #notes.list; 1){
+                if(notes.list[i].id == noteData.id){
+                    table.remove(notes.list, i);
+                    break;
+                }
+            }
+            saveNotes();
+            noteWindows[noteData.id] = null;
+            w.close();
+        }
+    });
+
+    // 窗口位置变化
+    w.onPosChanged = function(){
+        noteData.x, noteData.y, noteData.w, noteData.h = w.getRect();
+        saveNotes();
+    }
+
+    // 关闭时不真正关闭,只是隐藏 (避免被误关)
+    // 我们采用直接关闭 → 删除(已经实现了)
+
+    noteWindows[noteData.id] = w;
+    w.show();
+    return w;
+}
+
+// 主控窗口
+var main = win.form(text="便签管理器";right=320;bottom=400;border="thin")
+main.add(
+list={cls="listbox";text="";left=10;top=10;right=310;bottom=300;edge=1;vscroll=1;z=1};
+btnNew={cls="button";text="新建便签";left=10;top=310;right=100;bottom=340;z=2};
+btnShow={cls="button";text="显示";left=110;top=310;right=200;bottom=340;z=3};
+btnDelete={cls="button";text="删除";left=210;top=310;right=310;bottom=340;z=4};
+status={cls="static";text="共 0 个便签";left=10;top=345;right=310;bottom=375;color=0x666666;transparent=1;z=5}
+)
+
+var refreshList = function(){
+    main.list.clear();
+    for(i=1; #notes.list; 1){
+        var n = notes.list[i];
+        var preview = string.left(string.replace(string.replace(n.text, '\n', ' '), '\r', ''), 50);
+        main.list.add("[" ++ n.id ++ "] " ++ n.color ++ "  " ++ preview);
+    }
+    main.status.text = "共 " ++ #notes.list ++ " 个便签";
+}
+
+main.btnNew.oncommand = function(){
+    createNote(null);
+    refreshList();
+}
+
+main.btnShow.oncommand = function(){
+    var idx = main.list.selIndex;
+    if(idx && notes.list[idx]){
+        var w = noteWindows[notes.list[idx].id];
+        if(w){
+            w.show();
+            w.setForeground();
+        } else {
+            createNote(notes.list[idx]);
+        }
+    }
+}
+
+main.btnDelete.oncommand = function(){
+    var idx = main.list.selIndex;
+    if(idx && notes.list[idx]){
+        if(main.msgbox("删除便签 #" ++ notes.list[idx].id ++ "?", "确认", 0x24) == 6){
+            var w = noteWindows[notes.list[idx].id];
+            if(w) w.close();
+            noteWindows[notes.list[idx].id] = null;
+            table.remove(notes.list, idx);
+            saveNotes();
+            refreshList();
+        }
+    }
+}
+
+main.list.onDoubleClick = function(){
+    main.btnShow.oncommand();
+}
+
+// 托盘菜单
+import win.util.tray;
+var tray = win.util.tray(main, {tooltip="便签管理器 - " ++ #notes.list ++ " 个便签"})
+
+tray.message = function(wParam, lParam){
+    if(lParam == 0x205){
+        win.setForeground(main.hwnd, true);
+        main.popmenu2 = win.ui.popmenu(main);
+        main.popmenu2.add("新建便签", function(){
+            createNote(null);
+            refreshList();
+        });
+        main.popmenu2.add("显示管理器", function(){
+            main.show();
+            main.setForeground();
+        });
+        main.popmenu2.add();
+        for(i=1; #notes.list; 1){
+            var n = notes.list[i];
+            main.popmenu2.add("便签 #" ++ n.id ++ " (" ++ n.color ++ ")", function(arg){
+                var id = tonumber(arg);
+                if(noteWindows[id]){
+                    noteWindows[id].show();
+                    noteWindows[id].setForeground();
+                } else {
+                    for(j=1; #notes.list; 1){
+                        if(notes.list[j].id == id){
+                            createNote(notes.list[j]);
+                            break;
+                        }
+                    }
+                }
+            }, tostring(n.id));
+        }
+        main.popmenu2.add();
+        main.popmenu2.add("退出", function(){
+            saveNotes();
+            main.close();
+        });
+        main.popmenu2.popup();
+        main.popmenu2.close();
+    } else if(lParam == 0x202){
+        main.show();
+        main.setForeground();
+    }
+}
+
+main.onClose = function(hwnd, message, wParam, lParam){
+    saveNotes();
+    main.hide();
+    return true;
+}
+
+// 启动时恢复所有便签
+for(i=1; #notes.list; 1){
+    createNote(notes.list[i]);
+}
+
+refreshList();
+main.show();
+win.loopMessage();

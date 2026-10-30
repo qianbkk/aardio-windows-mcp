@@ -1,0 +1,245 @@
+﻿//===================================================================
+// 工具24: 桌面待办 (Todo)
+// 功能: 任务管理,优先级,截止日期,分类
+//===================================================================
+
+import win.ui;
+import win.util.tray;
+import JSON;
+import time;
+import fsys;
+
+var dataFile = io.appData("/aardio-todo/data.json");
+var data = {
+    tasks = {};
+    categories = {"工作"; "学习"; "生活"; "其他"};
+    lastId = 0;
+}
+
+if(fsys.isFile(dataFile)){
+    try{
+        var c = string.load(dataFile);
+        if(c) data = JSON.parse(c);
+    }
+}
+
+var saveData = function(){
+    if(!fsys.isDir(fsys.getParentDir(dataFile))) fsys.createDir(fsys.getParentDir(dataFile));
+    string.save(dataFile, JSON.stringify(data, true), false);
+}
+
+var main = win.form(text="待办";right=700;bottom=550;border="thin")
+main.add(
+toolbar={cls="bk";left=0;top=0;right=700;bottom=40;bgcolor=0xF0F0F0;z=1};
+edtNew={cls="edit";text="";left=10;top=8;right=480;bottom=32;edge=1;font=LOGFONT(h=-13);z=2};
+cmbCategory={cls="combobox";text="";left=485;top=8;right=550;bottom=32;edge=1;z=3};
+cmbPriority={cls="combobox";text="";left=555;top=8;right=620;bottom=32;edge=1;items={"低";"中";"高"};z=4};
+btnAdd={cls="button";text="+ 添加";left=625;top=8;right=695;bottom=32;z=5};
+
+lblFilter={cls="static";text="显示:";left=10;top=48;right=60;bottom=68;z=6};
+cmbFilter={cls="combobox";text="";left=65;top=45;right=200;bottom=68;edge=1;items={"全部";"未完成";"已完成";"今日到期";"已过期"};z=7};
+
+list={cls="listview";left=10;top=75;right=690;bottom=480;edge=1;fullRow=1;grid=1;vscroll=1;z=8};
+list.insertColumn("☐", 30);
+list.insertColumn("内容", 280);
+list.insertColumn("分类", 60);
+list.insertColumn("优先级", 60);
+list.insertColumn("截止", 100);
+list.insertColumn("状态", 60);
+list.insertColumn("创建", 90);
+
+toolbar2={cls="bk";left=0;top=485;right=700;bottom=520;bgcolor=0xF0F0F0;z=9};
+btnDone={cls="button";text="完成/取消完成";left=10;top=492;right=130;bottom=515;z=10};
+btnEdit={cls="button";text="编辑";left=135;top=492;right=220;bottom=515;z=11};
+btnDel={cls="button";text="删除";left=225;top=492;right=310;bottom=515;z=12};
+btnClearDone={cls="button";text="清除已完成";left=315;top=492;right=430;bottom=515;z=13};
+status={cls="static";text="共 0 个任务";left=440;top=495;right=690;bottom=515;color=0x666666;transparent=1;z=14}
+)
+
+for(i=1; #data.categories; 1){
+    main.cmbCategory.add(data.categories[i]);
+}
+main.cmbCategory.selIndex = 1;
+main.cmbPriority.selIndex = 2;
+main.cmbFilter.selIndex = 1;
+
+var matchesFilter = function(task, filter){
+    if(filter == 1) return !task.done;  // 未完成
+    if(filter == 2) return task.done;   // 已完成
+    if(filter == 3){  // 今日到期
+        if(!task.deadline) return false;
+        var today = time(time.now(), "%Y-%m-%d");
+        return string.left(task.deadline, 10) == today;
+    }
+    if(filter == 4){  // 已过期
+        if(!task.deadline || task.done) return false;
+        var today = time(time.now(), "%Y-%m-%d");
+        return string.left(task.deadline, 10) < today;
+    }
+    return true;  // 全部
+}
+
+var refreshList = function(){
+    main.list.clear();
+    var filter = main.cmbFilter.selIndex || 1;
+    var pending = 0;
+    for(i=1; #data.tasks; 1){
+        var t = data.tasks[i];
+        if(!matchesFilter(t, filter)) continue;
+        if(!t.done) pending = pending + 1;
+        var status = t.done ? "✓" : "○";
+        var priorityStr = t.priority == 1 ? "低" : (t.priority == 2 ? "中" : "高");
+        var deadline = t.deadline || "-";
+        var created = time(t.created, "%m-%d");
+        main.list.addItem({
+            status;
+            t.content;
+            t.category;
+            priorityStr;
+            deadline;
+            t.done ? "已完成" : "进行中";
+            created;
+        });
+    }
+    main.status.text = "共 " ++ #data.tasks ++ " 个 - 待办 " ++ pending ++ " 个";
+}
+
+main.btnAdd.oncommand = function(){
+    var content = string.trim(main.edtNew.text);
+    if(#content == 0) return;
+    data.lastId = data.lastId + 1;
+    table.push(data.tasks, {
+        id = data.lastId;
+        content = content;
+        category = data.categories[main.cmbCategory.selIndex || 1];
+        priority = main.cmbPriority.selIndex || 2;
+        deadline = null;
+        done = false;
+        created = time.now();
+    });
+    main.edtNew.text = "";
+    saveData();
+    refreshList();
+}
+
+main.edtNew.onOk = function(){
+    main.btnAdd.oncommand();
+}
+
+main.list.onDoubleClick = function(){
+    var idx = main.list.selIndex;
+    if(!idx) return;
+    var task = data.tasks[idx];
+    task.done = !task.done;
+    saveData();
+    refreshList();
+}
+
+main.btnDone.oncommand = function(){
+    var idx = main.list.selIndex;
+    if(!idx) return;
+    data.tasks[idx].done = !data.tasks[idx].done;
+    saveData();
+    refreshList();
+}
+
+main.btnEdit.oncommand = function(){
+    var idx = main.list.selIndex;
+    if(!idx) return;
+    var task = data.tasks[idx];
+    var dlg = win.form(text="编辑任务";right=400;bottom=200;border="thin")
+    dlg.add(
+    lbl1={cls="static";text="内容:";left=10;top=15;right=80;bottom=35;z=1};
+    edtC={cls="edit";text=task.content;left=90;top=10;right=390;bottom=50;edge=1;hscroll=1;multiline=1;vscroll=1;z=2};
+    lbl2={cls="static";text="截止 (YYYY-MM-DD):";left=10;top=60;right=140;bottom=80;z=3};
+    edtD={cls="edit";text=task.deadline || "";left=145;top=55;right=290;bottom=80;edge=1;z=4};
+    btnClear={cls="button";text="清除";left=295;top=55;right=345;bottom=80;z=5};
+    lbl3={cls="static";text="优先级:";left=10;top=95;right=80;bottom=115;z=6};
+    cmbP={cls="combobox";text="";left=90;top=90;right=200;bottom=115;edge=1;items={"低";"中";"高"};z=7};
+    btnOK={cls="button";text="保存";left=100;top=140;right=180;bottom=170;z=8};
+    btnCancel={cls="button";text="取消";left=200;top=140;right=280;bottom=170;z=9}
+    )
+    dlg.cmbP.selIndex = task.priority;
+    dlg.btnClear.oncommand = function(){
+        dlg.edtD.text = "";
+    }
+    dlg.btnOK.oncommand = function(){
+        task.content = dlg.edtC.text;
+        if(#dlg.edtD.text > 0){
+            task.deadline = dlg.edtD.text;
+        } else {
+            task.deadline = null;
+        }
+        task.priority = dlg.cmbP.selIndex;
+        saveData();
+        refreshList();
+        dlg.close();
+    }
+    dlg.btnCancel.oncommand = function(){ dlg.close(); }
+    dlg.show();
+};
+
+main.btnDel.oncommand = function(){
+    var idx = main.list.selIndex;
+    if(!idx) return;
+    if(main.msgbox("删除任务?", "确认", 0x24) == 6){
+        table.remove(data.tasks, idx);
+        saveData();
+        refreshList();
+    }
+};
+
+main.btnClearDone.oncommand = function(){
+    var count = 0;
+    for(i=#data.tasks; 1; -1){
+        if(data.tasks[i].done){
+            table.remove(data.tasks, i);
+            count = count + 1;
+        }
+    }
+    saveData();
+    refreshList();
+    main.status.text = main.status.text ++ " - 清除 " ++ count ++ " 个";
+};
+
+main.cmbFilter.oncommand = refreshList;
+
+// 托盘
+import win.util.tray;
+var tray = win.util.tray(main, {tooltip="待办 - " ++ #data.tasks ++ " 个任务"})
+
+tray.message = function(wParam, lParam){
+    if(lParam == 0x205){
+        win.setForeground(main.hwnd, true);
+        main.popmenu = win.ui.popmenu(main);
+        main.popmenu.add("显示主窗口", function(){
+            main.show();
+            main.setForeground();
+        });
+        var pending = 0;
+        for(i=1; #data.tasks; 1){
+            if(!data.tasks[i].done) pending = pending + 1;
+        }
+        main.popmenu.add("待办数: " ++ pending, function(){});
+        main.popmenu.add();
+        main.popmenu.add("退出", function(){
+            saveData();
+            main.close();
+        });
+        main.popmenu.popup();
+        main.popmenu.close();
+    } else if(lParam == 0x202){
+        main.show();
+        main.setForeground();
+    }
+}
+
+main.onClose = function(){
+    saveData();
+    main.hide();
+    return true;
+}
+
+refreshList();
+main.show();
+win.loopMessage();

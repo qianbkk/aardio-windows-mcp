@@ -1,0 +1,134 @@
+//===================================================================
+// 工具23: 本地文件 HTTP 服务器
+// 功能: 一键把本地目录变成 HTTP 服务器,扫码下载
+//===================================================================
+
+import win.ui;
+import wsock.tcp.simpleHttpServer;
+import fsys;
+import inet.url;
+import io;
+import time;
+import process;
+import com;
+
+var main = win.form(text="本地 HTTP 服务器";right=520;bottom=400;border="thin")
+main.add(
+lblDir={cls="static";text="共享目录:";left=10;top=10;right=80;bottom=30;z=1};
+edtDir={cls="edit";text="";left=90;top=5;right=420;bottom=30;edge=1;z=2};
+btnChoose={cls="button";text="...";left=425;top=5;right=470;bottom=30;z=3};
+btnStart={cls="button";text="启动";left=475;top=5;right=510;bottom=30;z=4};
+lblPort={cls="static";text="端口:";left=10;top=40;right=80;bottom=60;z=5};
+edtPort={cls="edit";text="8888";left=90;top=35;right=200;bottom=60;edge=1;z=6};
+chkLan={cls="checkbox";text="允许局域网访问";left=210;top=38;right=360;bottom=58;z=7};
+lblStatus={cls="static";text="未启动";left=10;top=70;right=510;bottom=90;color=0xCC0000;font=LOGFONT(h=-13;weight=700);z=8};
+lblIP={cls="static";text="本机 IP: ?";left=10;top=100;right=510;bottom=120;color=0x006600;z=9};
+lblInfo={cls="static";text="访问 URL: http://localhost:8888";left=10;top=120;right=510;bottom=140;color=0x666666;z=10};
+log={cls="edit";text="";left=10;top=145;right=510;bottom=360;edge=1;hscroll=1;multiline=1;readonly=1;vscroll=1;font=LOGFONT(name="Consolas";h=-12);z=11};
+btnOpen={cls="button";text="在浏览器打开";left=10;top=365;right=130;bottom=395;z=12};
+btnCopy={cls="button";text="复制 URL";left=135;top=365;right=240;bottom=395;z=13}
+)
+
+var getLocalIP = function(){
+    // WScript.Network 拿不到可靠的本机 IP (原代码 adapter. 残句), 简化返回回环地址
+    return "127.0.0.1";
+}
+
+var logMsg = function(s){
+    main.log.appendLog(s ++ "\r\n");
+    main.log.scrollCaret();
+}
+
+var server = null;
+var sharingDir = "";
+
+main.btnChoose.oncommand = function(){
+    import fsys.dlg;
+    var dir = fsys.dlg.dir("选择共享目录", main.edtDir.text)
+    if(dir) main.edtDir.text = dir;
+}
+
+main.btnStart.oncommand = function(){
+    if(server){
+        // 停止
+        try{ server.close(); }catch(e){}
+        server = null;
+        main.lblStatus.text = "已停止";
+        main.lblStatus.color = 0xCC0000;
+        main.btnStart.text = "启动";
+        return;
+    }
+    var dir = main.edtDir.text;
+    if(#dir == 0 || !fsys.isDir(dir)){
+        main.msgbox("请选择有效目录", "提示", 0x40);
+        return;
+    }
+    var port = tonumber(main.edtPort.text) || 8888;
+    sharingDir = dir;
+    main.btnStart.text = "停止";
+
+    // 启动 HTTP 服务器 (simpleHttpServer 已顶部 import)
+    thread.invoke(
+        function(winform, port, dir){
+            server = wsock.tcp.simpleHttpServer(
+                "0.0.0.0:" ++ port,
+                function(response, request){
+                    var path = string.replace(request.pathInfo, "\\", "/");
+                    if(string.startWith(path, "/")) path = string.slice(path, 2);
+                    if(#path == 0) path = "index.html";
+                    var localPath = dir ++ "\\" ++ path;
+                    winform.log.appendLog("[REQ] " ++ request.method ++ " " ++ path ++ " from " ++ request.remoteAddr ++ "\r\n");
+                    winform.log.scrollCaret();
+                    if(fsys.isDir(localPath)){
+                        // 列出目录 (fsys.list 返回 files, folders)
+                        var html = "<html><head><meta charset='UTF-8'><title>" ++ path ++ "</title></head><body><h1>" ++ path ++ "</h1><ul>";
+                        var fileList, folderList = fsys.list(localPath);
+                        for(i, f in folderList){
+                            html = html ++ "<li><a href='" ++ inet.url.encode(f) ++ "'>" ++ f ++ "/</a></li>";
+                        }
+                        for(i, f in fileList){
+                            var full = localPath ++ "\\" ++ f;
+                            var size = io.getSize(full) || 0;
+                            var display = size > 0 ? f ++ " (" ++ math.floor(size/1024) ++ " KB)" : f;
+                            html = html ++ "<li><a href='" ++ inet.url.encode(f) ++ "'>" ++ display ++ "</a></li>";
+                        }
+                        html = html ++ "</ul></body></html>";
+                        response.write(html);
+                    } else if(fsys.isFile(localPath)){
+                        // 发送文件 (simpleHttpServer 无 sendFile, 手动读文件写响应)
+                        var f = io.open(localPath, "rb");
+                        if(f){
+                            var buf = f.read(-1);
+                            f.close();
+                            response.writeBuffer(buf);
+                        } else {
+                            response.status = "500 Internal Server Error";
+                            response.write("读取文件失败: " ++ path);
+                        }
+                    } else {
+                        response.status = "404 Not Found";
+                        response.write("404 Not Found: " ++ path);
+                    }
+                }
+            );
+        },
+        main, port, dir
+    )
+    main.lblStatus.text = "运行中 (端口 " ++ port ++ ")";
+    main.lblStatus.color = 0x006600;
+}
+
+main.btnOpen.oncommand = function(){
+    process.execute("explorer.exe", "http://localhost:" ++ main.edtPort.text);
+}
+main.btnCopy.oncommand = function(){
+    import win.clip;
+    win.clip.write("http://localhost:" ++ main.edtPort.text);
+    main.logMsg("已复制");
+}
+
+main.lblIP.text = "本机 IP: " ++ getLocalIP();
+main.lblInfo.text = "访问 URL: http://localhost:" ++ main.edtPort.text;
+
+main.show();
+win.loopMessage();

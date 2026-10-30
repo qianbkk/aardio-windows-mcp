@@ -1,0 +1,197 @@
+//===================================================================
+// 工具12: 进程/资源监控
+// 功能: 实时显示进程 CPU/内存/路径,支持搜索/结束进程
+//===================================================================
+
+import win.ui;
+import process;
+import win.clip;
+
+var main = win.form(text="进程监控";right=820;bottom=600;border="thin")
+main.add(
+edtSearch={cls="edit";text="";left=10;top=10;right=810;bottom=36;edge=1;z=1};
+list={cls="listview";left=10;top=40;right=810;bottom=510;edge=1;fullRow=1;grid=1;hscroll=1;vscroll=1;z=2};
+btnRefresh={cls="button";text="刷新";left=10;top=520;right=80;bottom=550;z=3};
+btnKill={cls="button";text="结束进程";left=90;top=520;right=180;bottom=550;z=4};
+btnCopy={cls="button";text="复制路径";left=190;top=520;right=290;bottom=550;z=5};
+btnInfo={cls="button";text="详细信息";left=300;top=520;right=400;bottom=550;z=6};
+btnAuto={cls="checkbox";text="自动刷新 (2s)";left=410;top=525;right=560;bottom=550;z=7};
+status={cls="static";text="就绪";left=10;top=555;right=810;bottom=580;color=0x666666;transparent=1;z=8}
+)
+
+// 设置 listview 列
+main.list.insertColumn("PID", 60);
+main.list.insertColumn("名称", 180);
+main.list.insertColumn("CPU%", 80);
+main.list.insertColumn("内存", 100);
+main.list.insertColumn("路径", 380);
+
+var lastCpuTimes = {};  // pid -> {kernel, user, time}
+
+var getProcessList = function(){
+    var processes = {};
+    var processesByPid = {};
+
+    // 用 WMI 获取进程信息
+    try{
+        var wmi = com.CreateObject("WbemScripting.SWbemLocator");
+        var service = wmi.ConnectServer(".", "root\cimv2");
+        var items = service.ExecQuery("SELECT * FROM Win32_Process");
+        var enumerator = items.NewEnum();
+        while(enumerator){
+            var item = enumerator.item();
+            if(!item) break;
+            var pid = item.ProcessId;
+            try{
+                var cpu = 0;
+                var mem = 0;
+                try{
+                    var cpuKernel = tonumber(item.KernelModeTime) || 0;
+                    var cpuUser = tonumber(item.UserModeTime) || 0;
+                    var now = time.now();
+                    if(lastCpuTimes[pid]){
+                        var dt = now - lastCpuTimes[pid].time;
+                        if(dt > 0){
+                            var dCpu = (cpuKernel + cpuUser) - (lastCpuTimes[pid].kernel + lastCpuTimes[pid].user);
+                            cpu = dCpu / dt / 10000;  // 转换为百分比 (近似)
+                            if(cpu > 100) cpu = 100;
+                        }
+                    }
+                    lastCpuTimes[pid] = {kernel=cpuKernel; user=cpuUser; time=now};
+                } catch(e){}
+                try{
+                    mem = tonumber(item.WorkingSetSize) || 0;
+                } catch(e){}
+
+                var p = {
+                    pid = pid;
+                    name = item.Name || "未知";
+                    cpu = cpu;
+                    memory = mem;
+                    path = item.ExecutablePath || "(无路径)";
+                };
+                table.push(processes, p);
+                processesByPid[tostring(pid)] = p;
+            } catch(e){}
+            enumerator.moveNext();
+        }
+    } catch(e){
+        // 备选: psapi
+        try{
+            for(i=1; 200; 1){
+                try{
+                    var p = process.getInfo(i);
+                    if(p){
+                        table.push(processes, {pid=i; name=p.name; cpu=0; memory=0; path=p.path});
+                    }
+                } catch(e){}
+            }
+        } catch(ee){
+            main.status.text = "无法获取进程: " ++ tostring(e) ++ " | " ++ tostring(ee);
+        }
+    }
+    return processes;
+}
+
+var formatSize = function(n){
+    if(n < 1024*1024) return math.floor(n/1024) ++ " KB";
+    if(n < 1024*1024*1024) return math.floor(n/1024/1024) ++ " MB";
+    return string.format("%.2f GB", n/1024/1024/1024);
+}
+
+var processes = {};
+
+var refresh = function(){
+    processes = getProcessList();
+    // 按内存排序
+    table.sort(processes, function(a, b){
+        return a.memory > b.memory;
+    });
+
+    var filter = string.lower(string.trim(winform.edtSearch.text));
+    winform.list.clear();
+    var total = 0;
+    var totalMem = 0;
+    for(i=1; #processes; 1){
+        var p = processes[i];
+        total = total + 1;
+        totalMem = totalMem + p.memory;
+        if(#filter > 0){
+            if(string.find(string.lower(p.name), filter) || string.find(tostring(p.pid), filter) || string.find(string.lower(p.path), filter)){
+                // 显示
+            } else {
+                continue;
+            }
+        }
+        winform.list.addItem({
+            tostring(p.pid);
+            p.name;
+            string.format("%.1f%%", p.cpu);
+            formatSize(p.memory);
+            p.path;
+        });
+    }
+    winform.status.text = "共 " ++ total ++ " 个进程 - 总内存 " ++ formatSize(totalMem);
+}
+
+winform.btnRefresh.oncommand = refresh;
+
+var autoTimer = null;
+winform.btnAuto.oncommand = function(){
+    if(winform.btnAuto.checked){
+        if(autoTimer) main.clearInterval(autoTimer);
+        autoTimer = main.setInterval(2000, refresh);
+    } else {
+        if(autoTimer){
+            main.clearInterval(autoTimer);
+            autoTimer = null;
+        }
+    }
+}
+
+winform.edtSearch.onChange = refresh;
+
+winform.btnKill.oncommand = function(){
+    var idx = winform.list.selIndex;
+    if(!idx) return;
+    var p = processes[idx];
+    if(!p) return;
+    if(main.msgbox("结束进程 " ++ p.name ++ " (PID=" ++ p.pid ++ ")?", "确认", 0x24) == 6){
+        try{
+            process.kill(p.pid);
+            refresh();
+        } catch(e){
+            main.msgbox("结束失败: " ++ tostring(e), "错误", 0x10);
+        }
+    }
+}
+
+winform.btnCopy.oncommand = function(){
+    var idx = winform.list.selIndex;
+    if(!idx) return;
+    var p = processes[idx];
+    if(p && p.path){
+        win.clip.write(p.path);
+        main.status.text = "已复制: " ++ p.path;
+    }
+}
+
+winform.btnInfo.oncommand = function(){
+    var idx = winform.list.selIndex;
+    if(!idx) return;
+    var p = processes[idx];
+    if(p){
+        main.msgbox(
+            "PID: " ++ p.pid ++ "\n"
+            ++ "名称: " ++ p.name ++ "\n"
+            ++ "CPU: " ++ string.format("%.1f%%", p.cpu) ++ "\n"
+            ++ "内存: " ++ formatSize(p.memory) ++ "\n"
+            ++ "路径: " ++ p.path,
+            "进程信息", 0x40
+        );
+    }
+}
+
+refresh();
+winform.show();
+win.loopMessage();

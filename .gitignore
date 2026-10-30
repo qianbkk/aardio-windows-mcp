@@ -1,0 +1,42 @@
+# Local Agent Traces & Memory
+.workbuddy/
+
+# Scratch & Temporary Scripts
+scripts/_*
+scripts/capture-fail-errors.ps1
+research/*.txt
+
+# Legacy prototype attempts
+server/
+
+# Private Novel Studio Project
+projects/01-novel-studio/
+scripts/publish-fanqie-studio.ps1
+scripts/publish-novel-studio.ps1
+
+# Logs & Temporary Files
+logs/
+*.log
+*.err
+*.out
+fail-shots/
+
+# aardio & Build artifacts
+**/.build/
+_backup_*/
+*.bak
+*.clobbered.*
+port.txt
+config/app$.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+
+# Temporary files
+aardio_github.json
+.DS_Store
+Thumbs.db

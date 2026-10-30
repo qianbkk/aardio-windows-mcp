@@ -1,0 +1,174 @@
+﻿//===================================================================
+// 工具17: Git 命令快速面板
+// 功能: 常用 git 命令一键执行,可视化结果,支持自定义命令
+//===================================================================
+
+import win.ui;
+import process;
+import fsys.dlg;
+import fsys;
+import time;
+
+var currentDir = io.cwd();
+
+var commands = {
+    {name="状态 status", cmd="git status", icon="📊"};
+    {name="拉取 pull", cmd="git pull", icon="⬇️"};
+    {name="推送 push", cmd="git push", icon="⬆️"};
+    {name="拉取+推送 sync", cmd="git pull && git push", icon="🔄"};
+    {name="日志 (近 20 条) log", cmd="git log --oneline -20", icon="📜"};
+    {name="所有分支 log --all", cmd="git log --oneline --graph --all -20", icon="🌐"};
+    {name="暂存 add .", cmd="git add .", icon="➕"};
+    {name="提交 commit", cmd="", icon="💾"; interactive=true};
+    {name="分支 branch", cmd="git branch -a", icon="🌿"};
+    {name="切换分支 checkout", cmd="", icon="🔀"; interactive=true};
+    {name="新建分支", cmd="", icon="✨"; interactive=true};
+    {name="Diff", cmd="git diff", icon="🔍"};
+    {name="Stash 暂存", cmd="git stash", icon="📦"};
+    {name="Stash 恢复", cmd="git stash pop", icon="📤"};
+    {name="Stash 列表", cmd="git stash list", icon="📋"};
+    {name="Reset --hard (危险!)", cmd="", icon="⚠️"; interactive=true};
+    {name="清理 untracked", cmd="git clean -fd", icon="🧹"};
+    {name="标签 tag", cmd="git tag", icon="🏷️"};
+    {name="远程仓库 remote", cmd="git remote -v", icon="🔗"};
+    {name="贡献统计 shortlog", cmd="git shortlog -sn --all", icon="📈"};
+}
+
+var main = win.form(text="Git 快速面板";right=900;bottom=600;border="thin")
+main.add(
+lblDir={cls="static";text="目录: ?";left=10;top=10;right=600;bottom=30;color=0x666666;z=1};
+btnChoose={cls="button";text="选择目录";left=610;top=8;right=720;bottom=30;z=2};
+btnRefresh={cls="button";text="刷新";left=730;top=8;right=790;bottom=30;z=3};
+btnOpen={cls="button";text="资源管理器";left=800;top=8;right=890;bottom=30;z=4};
+btnList={cls="listbox";left=10;top=40;right=290;bottom=540;edge=1;vscroll=1;z=5};
+btnRun={cls="button";text="执行";left=10;top=545;right=90;bottom=570;z=6};
+btnCustom={cls="button";text="自定义命令";left=100;top=545;right=200;bottom=570;z=7};
+edt={cls="edit";text="";left=300;top=40;right=890;bottom=540;bgcolor=0x1E1E1E;color=0x00FF00;edge=1;hscroll=1;multiline=1;readonly=1;vscroll=1;font=LOGFONT(name="Consolas";h=-12);z=8};
+status={cls="static";text="就绪";left=210;top=550;right=890;bottom=575;color=0x666666;transparent=1;z=9}
+)
+
+main.lblDir.text = "目录: " ++ currentDir;
+
+var refreshCmds = function(){
+    main.btnList.clear();
+    for(i=1; #commands; 1){
+        main.btnList.add(commands[i].icon ++ "  " ++ commands[i].name);
+    }
+}
+refreshCmds();
+
+var runGit = function(cmd, interactive){
+    if(#currentDir == 0 || !fsys.isDir(currentDir)){
+        main.edt.appendLog("[错误] 目录无效: " ++ currentDir ++ "\r\n");
+        return;
+    }
+    main.edt.appendLog("\r\n[" ++ time.now() ++ "] $ " ++ cmd ++ "\r\n");
+    main.edt.scrollCaret();
+
+    if(interactive){
+        // 弹窗输入
+        var dlg = win.form(text="输入: " ++ cmd;right=600;bottom=200;border="thin")
+        dlg.add(
+        lbl={cls="static";text=cmd;left=10;top=15;right=590;bottom=35;z=1};
+        edtI={cls="edit";text="";left=10;top=45;right=590;bottom=130;edge=1;hscroll=1;multiline=1;vscroll=1;z=2};
+        btnOK={cls="button";text="执行";left=400;top=145;right=480;bottom=175;z=3};
+        btnCancel={cls="button";text="取消";left=490;top=145;right=580;bottom=175;z=4}
+        )
+        dlg.btnOK.oncommand = function(){
+            var input = dlg.edtI.text;
+            dlg.close();
+            if(#input == 0) return;
+            var fullCmd = cmd ++ " " ++ input;
+            main.edt.appendLog("  (用户输入: " ++ input ++ ")\r\n");
+            executeGit(fullCmd);
+        }
+        dlg.btnCancel.oncommand = function(){ dlg.close(); }
+        dlg.show();
+    } else {
+        executeGit(cmd);
+    }
+}
+
+var executeGit = function(cmd){
+    thread.invoke(
+        function(winform, currentDir, cmd){
+            var prcs = process(cmd, , , currentDir);
+            var line;
+            while(true){
+                line = prcs.readLine();
+                if(!line) break;
+                if(#line > 0){
+                    winform.edt.appendLog(line ++ "\r\n");
+                    winform.edt.scrollCaret();
+                }
+            }
+            winform.status.text = "完成";
+        },
+        main, currentDir, cmd
+    )
+}
+
+main.btnList.onSelChange = function(){
+    var idx = main.btnList.selIndex;
+    if(idx){
+        // 显示命令预览
+        main.edt.appendLog("\r\n--- 选中: " ++ commands[idx].name ++ " ---\r\n" ++ commands[idx].cmd ++ "\r\n");
+    }
+}
+
+main.btnList.onDoubleClick = function(){
+    var idx = main.btnList.selIndex;
+    if(idx){
+        runGit(commands[idx].cmd, commands[idx].interactive);
+    }
+}
+
+main.btnRun.oncommand = function(){
+    var idx = main.btnList.selIndex;
+    if(idx){
+        runGit(commands[idx].cmd, commands[idx].interactive);
+    }
+}
+
+main.btnChoose.oncommand = function(){
+    var dir = fsys.dlg.dir("选择 Git 仓库", currentDir)
+    if(dir){
+        currentDir = dir;
+        main.lblDir.text = "目录: " ++ currentDir;
+    }
+}
+
+main.btnOpen.oncommand = function(){
+    process.explore(currentDir);
+}
+
+main.btnRefresh.oncommand = function(){
+    refreshCmds();
+    runGit("git status", false);
+}
+
+main.btnCustom.oncommand = function(){
+    var dlg = win.form(text="自定义命令";right=600;bottom=150;border="thin")
+    dlg.add(
+    edt={cls="edit";text="git ";left=10;top=10;right=590;bottom=80;edge=1;hscroll=1;multiline=1;vscroll=1;z=1};
+    btnOK={cls="button";text="执行";left=420;top=90;right=500;bottom=120;z=2};
+    btnCancel={cls="button";text="取消";left=510;top=90;right=590;bottom=120;z=3}
+    )
+    dlg.btnOK.oncommand = function(){
+        var cmd = dlg.edt.text;
+        dlg.close();
+        if(#cmd > 0) runGit(cmd, false);
+    }
+    dlg.btnCancel.oncommand = function(){ dlg.close(); }
+    dlg.show();
+}
+
+// 启动时显示状态
+if(fsys.isDir(currentDir ++ "/.git")){
+    runGit("git status", false);
+} else {
+    main.edt.appendLog("提示: 当前目录不是 Git 仓库,请选择 Git 仓库目录\r\n");
+}
+
+main.show();
+win.loopMessage();

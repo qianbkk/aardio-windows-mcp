@@ -1,0 +1,245 @@
+﻿//===================================================================
+// 工具16: RSS 阅读器
+// 功能: 订阅 RSS,自动抓取,阅读器界面
+//===================================================================
+
+import win.ui;
+import web.view;
+import JSON;
+import inet.http;
+import time;
+
+var dataFile = io.appData("/aardio-rss-reader/data.json");
+var data = {
+    feeds = {
+        {name="少数派"; url="https://sspai.com/feed"};
+        {name="阮一峰的网络日志"; url="https://www.ruanyifeng.com/blog/atom.xml"};
+        {name="Hacker News"; url="https://hnrss.org/frontpage"};
+        {name="GitHub Trending"; url="https://mshibanami.github.io/GitHubTrendingRSS/weekly/all.xml"};
+    };
+    articles = {};
+    lastUpdate = 0;
+}
+
+if(fsys.isFile(dataFile)){
+    try{
+        var c = string.load(dataFile);
+        if(c) data = JSON.parse(c);
+    }
+}
+
+var saveData = function(){
+    if(!fsys.isDir(fsys.getParentDir(dataFile))) fsys.createDir(fsys.getParentDir(dataFile));
+    string.save(dataFile, JSON.stringify(data, true), false);
+}
+
+var main = win.form(text="RSS 阅读器";right=1000;bottom=600;border="thin")
+main.add(
+list={cls="listbox";text="";left=10;top=10;right=350;bottom=540;edge=1;vscroll=1;z=1};
+wb={cls="custom";left=360;top=10;right=990;bottom=540;z=2};
+toolbar={cls="bk";left=0;top=545;right=1000;bottom=580;bgcolor=0xF0F0F0;z=3};
+btnRefresh={cls="button";text="刷新全部";left=10;top=553;right=100;bottom=575;z=4};
+btnAdd={cls="button";text="添加 RSS";left=110;top=553;right=200;bottom=575;z=5};
+btnManage={cls="button";text="管理订阅";left=210;top=553;right=300;bottom=575;z=6};
+status={cls="static";text="就绪";left=310;top=555;right=990;bottom=575;color=0x666666;transparent=1;z=7}
+)
+
+var web = web.view(main.wb);
+web.html = /******
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<style>
+body { font-family: -apple-system, "Segoe UI", sans-serif; max-width: 800px; margin: 30px auto; padding: 0 20px; line-height: 1.7; color: #333; }
+h1 { color: #222; }
+</style>
+</head><body>
+<h1>RSS 阅读器</h1>
+<p>点击左侧文章开始阅读</p>
+</body></html>
+******/
+
+var parseRss = function(xml, feedName){
+    // 极简 RSS 解析 (使用 aardio 的 string.match)
+    var articles = {};
+    var pos = 1;
+    while(true){
+        var itemStart = string.find(xml, "<item", pos, true);
+        if(!itemStart) break;
+        itemStart = itemStart[1];
+        var itemEnd = string.find(xml, "</item>", itemStart, true);
+        if(!itemEnd) break;
+        itemEnd = itemEnd[1];
+        var itemXml = string.slice(xml, itemStart, itemEnd);
+
+        var title, link, desc, pubDate;
+
+        var t = string.match(itemXml, "<title>(.-)</title>");
+        if(t) title = t;
+
+        var l = string.match(itemXml, "<link>(.-)</link>");
+        if(!l) l = string.match(itemXml, `<link[^>]*href="(.-)"`);
+        if(l) link = l;
+
+        var d = string.match(itemXml, "<description>(.-)</description>", , true);
+        if(!d) d = string.match(itemXml, "<content:encoded>(.-)</content:encoded>", , true);
+        if(d){
+            // 去除 HTML 标签
+            d = string.replace(d, "<[^>]+>", "", true);
+            d = string.replace(d, "&[a-z]+;", "", true);
+        }
+        desc = d || "";
+
+        var p = string.match(itemXml, "<pubDate>(.-)</pubDate>", , true);
+        if(!p) p = string.match(itemXml, "<published>(.-)</published>", , true);
+        pubDate = p || "";
+
+        if(title){
+            table.push(articles, {
+                feed = feedName;
+                title = string.replace(string.replace(title, "&#39;", "'"), "&quot;", `"`);
+                link = link || "";
+                desc = string.left(desc, 500);
+                pubDate = pubDate;
+                read = false;
+            });
+        }
+
+        pos = itemEnd + 1;
+    }
+    return articles;
+}
+
+var refresh = function(){
+    main.status.text = "正在刷新 " ++ #data.feeds ++ " 个订阅源...";
+    thread.invoke(
+        function(winform, data){
+            import inet.http;
+import fsys;
+            var newArticles = {};
+            for(i=1; #data.feeds; 1){
+                var feed = data.feeds[i];
+                try{
+                    var http = inet.http();
+                    var xml = http.get(feed.url);
+                    if(xml){
+                        var articles = parseRss(xml, feed.name);
+                        for(j=1; #articles; 1){
+                            table.push(newArticles, articles[j]);
+                        }
+                    }
+                } catch(e){}
+            }
+            // 按日期排序
+            table.sort(newArticles, function(a, b){
+                return (a.pubDate > b.pubDate);
+            });
+            data.articles = newArticles;
+            data.lastUpdate = time.now();
+            winform.status.text = "已获取 " ++ #newArticles ++ " 篇文章 - " ++ time(data.lastUpdate, "%Y-%m-%d %H:%M:%S");
+            // 刷新列表
+            winform.list.clear();
+            for(i=1; #data.articles; 1){
+                var a = data.articles[i];
+                var prefix = a.read ? "✓ " : "● ";
+                var label = prefix ++ "[" ++ a.feed ++ "] " ++ string.left(a.title, 50);
+                if(#a.title > 50) label = label ++ "...";
+                winform.list.add(label);
+            }
+        },
+        main, data
+    )
+}
+
+main.btnRefresh.oncommand = refresh;
+
+main.list.onSelChange = function(){
+    var idx = main.list.selIndex;
+    if(!idx) return;
+    var a = data.articles[idx];
+    if(!a) return;
+    a.read = true;
+    var html = /******
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<style>
+body { font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; max-width: 800px; margin: 30px auto; padding: 0 20px; line-height: 1.7; color: #333; }
+.feed { color: #1A73E8; font-size: 0.9em; margin-bottom: 8px; }
+h1 { color: #222; border-bottom: 2px solid #1A73E8; padding-bottom: 8px; }
+.date { color: #999; font-size: 0.85em; }
+.desc { color: #555; margin: 20px 0; }
+.link { display: inline-block; margin: 20px 0; padding: 10px 20px; background: #1A73E8; color: white; text-decoration: none; border-radius: 4px; }
+</style>
+</head><body>
+******/
+    html = html ++ '<div class="feed">📰 ' ++ a.feed ++ '</div>';
+    html = html ++ '<h1>' ++ a.title ++ '</h1>';
+    html = html ++ '<div class="date">' ++ a.pubDate ++ '</div>';
+    html = html ++ '<div class="desc">' ++ a.desc ++ '</div>';
+    if(a.link) html = html ++ '<a class="link" href="' ++ a.link ++ '" target="_blank">查看原文 →</a>';
+    html = html ++ '</body></html>';
+    web.html = html;
+    // 标记为已读
+    var label = "✓ [" ++ a.feed ++ "] " ++ string.left(a.title, 50);
+    if(#a.title > 50) label = label ++ "...";
+    main.list.setItemText(idx, label);
+}
+
+main.btnAdd.oncommand = function(){
+    var dlg = win.form(text="添加 RSS";right=400;bottom=150;border="thin")
+    dlg.add(
+    lblN={cls="static";text="名称:";left=10;top=15;right=80;bottom=35;z=1};
+    edtN={cls="edit";text="";left=90;top=10;right=380;bottom=35;edge=1;z=2};
+    lblU={cls="static";text="URL:";left=10;top=50;right=80;bottom=70;z=3};
+    edtU={cls="edit";text="";left=90;top=45;right=380;bottom=70;edge=1;z=4};
+    btnOK={cls="button";text="添加";left=100;top=90;right=170;bottom=120;z=5};
+    btnCancel={cls="button";text="取消";left=180;top=90;right=250;bottom=120;z=6}
+    )
+    dlg.btnOK.oncommand = function(){
+        if(#dlg.edtN.text > 0 && #dlg.edtU.text > 0){
+            table.push(data.feeds, {name=dlg.edtN.text; url=dlg.edtU.text});
+            saveData();
+            refresh();
+            dlg.close();
+        }
+    }
+    dlg.btnCancel.oncommand = function(){ dlg.close(); }
+    dlg.show();
+}
+
+main.btnManage.oncommand = function(){
+    var dlg = win.form(text="管理订阅";right=500;bottom=400;border="thin")
+    dlg.add(
+    list={cls="listbox";text="";left=10;top=10;right=490;bottom=330;edge=1;z=1};
+    btnDel={cls="button";text="删除";left=10;top=340;right=80;bottom=370;z=2};
+    btnClose={cls="button";text="关闭";left=400;top=340;right=490;bottom=370;z=3}
+    )
+    for(i=1; #data.feeds; 1){
+        dlg.list.add(data.feeds[i].name ++ "  -  " ++ data.feeds[i].url);
+    }
+    dlg.btnDel.oncommand = function(){
+        var idx = dlg.list.selIndex;
+        if(idx){
+            table.remove(data.feeds, idx);
+            dlg.list.clear();
+            for(i=1; #data.feeds; 1){
+                dlg.list.add(data.feeds[i].name ++ "  -  " ++ data.feeds[i].url);
+            }
+            saveData();
+        }
+    }
+    dlg.btnClose.oncommand = function(){ dlg.close(); }
+    dlg.show();
+}
+
+// 启动时如果有缓存,先显示
+if(#data.articles > 0){
+    for(i=1; #data.articles; 1){
+        var a = data.articles[i];
+        var prefix = a.read ? "✓ " : "● ";
+        main.list.add(prefix ++ "[" ++ a.feed ++ "] " ++ string.left(a.title, 50) ++ (#a.title > 50 ? "..." : ""));
+    }
+    main.status.text = "上次更新: " ++ time(data.lastUpdate, "%Y-%m-%d %H:%M:%S") ++ " - 共 " ++ #data.articles ++ " 篇";
+}
+
+main.show();
+win.loopMessage();

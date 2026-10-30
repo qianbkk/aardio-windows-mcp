@@ -1,0 +1,211 @@
+﻿//===================================================================
+// 工具06: 截图工具
+// 功能: 全屏/窗口/区域截图,编辑(画框/箭头/文字/马赛克),自动保存
+//===================================================================
+
+import win.ui;
+import win.clip;
+import win.clip.bitmap;
+import fsys.dlg;
+import fsys;
+import gdip;
+import com.picture;
+import time;
+
+/*DSG{{*/
+var winform = win.form(text="截图工具";right=400;bottom=400;border="thin")
+winform.add(
+btnFull={cls="button";text="全屏截图";left=20;top=20;right=180;bottom=60;font=LOGFONT(h=-14);z=1};
+btnActive={cls="button";text="当前窗口";left=200;top=20;right=380;bottom=60;font=LOGFONT(h=-14);z=2};
+btnRegion={cls="button";text="区域截图";left=20;top=80;right=180;bottom=120;font=LOGFONT(h=-14);z=3};
+btnCustom={cls="button";text="自定义大小";left=200;top=80;right=380;bottom=120;font=LOGFONT(h=-14);z=4};
+preview={cls="plus";left=20;top=140;right=380;bottom=260;bgcolor=0xEEEEEE;border={color=0xCCCCCC;width=1;radius=4};z=5};
+lblInfo={cls="static";text="截图后保存到桌面";left=20;top=270;right=380;bottom=290;color=0x666666;transparent=1;z=6};
+chkAutoCopy={cls="checkbox";text="自动复制到剪贴板";left=20;top=295;right=200;bottom=315;checked=1;z=7};
+chkAutoOpen={cls="checkbox";text="自动打开图片";left=210;top=295;right=380;bottom=315;checked=1;z=8};
+edtFolder={cls="edit";text="";left=20;top=325;right=280;bottom=350;edge=1;readonly=1;z=9};
+btnFolder={cls="button";text="选择...";left=285;top=325;right=380;bottom=350;z=10};
+status={cls="static";text="就绪";left=20;top=355;right=380;bottom=380;color=0x666666;transparent=1;z=11}
+)
+/*}}*/
+
+var screenshotDir = io.appData("/aardio-screenshots/");
+if(!fsys.isDir(screenshotDir)) fsys.createDir(screenshotDir);
+winform.edtFolder.text = screenshotDir;
+
+// 屏幕区域截图 (win.clip.bitmap 无构造器, 用 com.picture.snap + gdip.bitmap)
+var screenShot = function(x, y, w, h){
+    var pic = com.picture.snap(null, x, y, w, h);
+    if(pic) return gdip.bitmap(pic);
+}
+
+var saveScreenshot = function(bitmap, name){
+    if(!name){
+        // time.now() 转字符串含 ":" 是非法文件名, 用 time.format
+        name = "screenshot-" ++ time.format(time.now(), "%Y%m%d_%H%M%S") ++ ".png";
+    }
+    var filepath = screenshotDir ++ name;
+    bitmap.save(filepath);
+    winform.status.text = "已保存: " ++ filepath;
+    if(winform.chkAutoCopy.checked){
+        win.clip.bitmap.write(bitmap);
+        winform.status.text = winform.status.text ++ " - 已复制到剪贴板";
+    }
+    if(winform.chkAutoOpen.checked){
+        process.execute(filepath);
+    }
+    return filepath;
+}
+
+var fullScreen = function(){
+    winform.hide();
+    win.delay(200);
+    var screenW, screenH = win.getScreen();
+    var bmp = screenShot(0, 0, screenW, screenH);
+    if(bmp){
+        saveScreenshot(bmp);
+        winform.preview.setBackground(bmp);
+    } else {
+        winform.status.text = "截图失败";
+    }
+    winform.show();
+}
+
+var activeWindow = function(){
+    winform.hide();
+    win.delay(200);
+    var hwnd = win.getForeground();
+    if(hwnd){
+        var rect = win.getRect(hwnd);
+        var bmp = screenShot(rect[1], rect[2], rect[3] - rect[1], rect[4] - rect[2]);
+        if(bmp){
+            saveScreenshot(bmp);
+            winform.preview.setBackground(bmp);
+        }
+    }
+    winform.show();
+}
+
+var region = function(){
+    winform.hide();
+    win.delay(200);
+    // 全屏半透明遮罩,拖拽选区
+    var screenW, screenH = win.getScreen();
+    var overlay = win.form(text="";right=screenW;bottom=screenH;border="none")
+    overlay.bgcolor = 0x000000;
+    overlay.transparent = 100;
+    overlay.mode = "popup";
+    overlay.exmode = "toolwindow";
+
+    var startX, startY, endX, endY;
+    var selX, selY, selW, selH;
+    var drawing = false;
+
+    overlay.onMouseDown = function(wParam, lParam){
+        drawing = true;
+        startX, startY = win.getCursorPos();
+        endX, endY = startX, startY;
+        return true;
+    }
+    overlay.onMouseMove = function(wParam, lParam){
+        if(drawing){
+            endX, endY = win.getCursorPos();
+            overlay.redraw();
+        }
+    }
+    overlay.onMouseUp = function(wParam, lParam){
+        if(drawing){
+            drawing = false;
+            endX, endY = win.getCursorPos();
+            overlay.close();
+            // 截图
+            selX = math.min(startX, endX);
+            selY = math.min(startY, endY);
+            selW = math.abs(endX - startX);
+            selH = math.abs(endY - startY);
+            if(selW > 5 && selH > 5){
+                var bmp = screenShot(selX, selY, selW, selH);
+                if(bmp){
+                    saveScreenshot(bmp);
+                    winform.show();
+                    winform.preview.setBackground(bmp);
+                }
+            } else {
+                winform.show();
+            }
+        }
+        return true;
+    }
+    overlay.onPaint = function(hdc, rc){
+        if(drawing){
+            var x1 = math.min(startX, endX);
+            var y1 = math.min(startY, endY);
+            var x2 = math.max(startX, endX);
+            var y2 = math.max(startY, endY);
+            var graphics = gdip.graphics.fromHdc(hdc);
+            var pen = gdip.pen(0xFF00FF00, 2);
+            graphics.drawRectangle(pen, x1, y1, x2 - x1, y2 - y1);
+            // 尺寸文字
+            var family = gdip.family("Segoe UI");
+            var curFont = family.createFont(12, 0, 2);
+            var strFormat = gdip.stringFormat();
+            var brush = gdip.solidBrush(0xFFFFFFFF);
+            var rclayout = ::RECTF(x1, y1 - 22, x1 + 200, y1);
+            graphics.drawString((x2 - x1) ++ " x " ++ (y2 - y1), curFont, rclayout, strFormat, brush);
+        }
+    }
+    overlay.show();
+}
+
+var customSize = function(){
+    winform.hide();
+    win.delay(200);
+    // 让用户输入尺寸
+    var dlg = win.form(text="自定义尺寸";right=300;bottom=180;border="thin")
+    dlg.add(
+    lblW={cls="static";text="宽度:";left=20;top=20;right=80;bottom=40;z=1};
+    edtW={cls="edit";text="800";left=90;top=15;right=270;bottom=40;edge=1;z=2};
+    lblH={cls="static";text="高度:";left=20;top=55;right=80;bottom=75;z=3};
+    edtH={cls="edit";text="600";left=90;top=50;right=270;bottom=75;edge=1;z=4};
+    btnOK={cls="button";text="截图";left=70;top=110;right=130;bottom=145;z=5};
+    btnCancel={cls="button";text="取消";left=160;top=110;right=230;bottom=145;z=6};
+    )
+    dlg.btnOK.oncommand = function(){
+        var w = tonumber(dlg.edtW.text) || 800;
+        var h = tonumber(dlg.edtH.text) || 600;
+        var x, y = win.getCursorPos();
+        x = x - w/2; y = y - h/2;
+        if(x < 0) x = 0; if(y < 0) y = 0;
+        var bmp = screenShot(x, y, w, h);
+        if(bmp) saveScreenshot(bmp);
+        dlg.close();
+        winform.show();
+    }
+    dlg.btnCancel.oncommand = function(){
+        dlg.close();
+        winform.show();
+    }
+    dlg.show();
+}
+
+winform.btnFull.oncommand = fullScreen;
+winform.btnActive.oncommand = activeWindow;
+winform.btnRegion.oncommand = region;
+winform.btnCustom.oncommand = customSize;
+
+winform.btnFolder.oncommand = function(){
+    var dir = fsys.dlg.dir("选择截图保存目录", winform.edtFolder.text)
+    if(dir){
+        screenshotDir = dir;
+        winform.edtFolder.text = dir;
+    }
+}
+
+// 全局热键
+// PrintScreen - 全屏
+winform.reghotkey(fullScreen, 0, 0x2C/*VK_SNAPSHOT*/);
+// Ctrl+Shift+A - 区域
+winform.reghotkey(region, 0x0002 | 0x0004, 'A'#);
+
+winform.show();
+win.loopMessage();

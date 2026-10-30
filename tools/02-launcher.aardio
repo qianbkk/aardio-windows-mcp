@@ -1,0 +1,262 @@
+﻿//===================================================================
+// 工具02: 快捷启动器 (Launcher - 类 Alfred/Wox)
+// 功能: 全局热键唤起,搜索应用/书签/自定义命令
+//===================================================================
+
+import win.ui;
+import fsys.shortcut;
+import process;
+import key;
+import win.util.tray;
+import JSON;
+
+var INVISIBLE_BORDER = "none";
+
+/*DSG{{*/
+var winform = win.form(text="Launcher";right=620;bottom=80;border="none";mode="popup";exmode="toolwindow")
+winform.add(
+edt={cls="edit";text="";left=10;top=10;right=610;bottom=40;bgcolor=0xFFFFFF;color=0x333333;edge=1;font=LOGFONT(h=-16);z=1};
+list={cls="listbox";text="";left=10;top=42;right=610;bottom=70;bgcolor=0xFAFAFA;edge=1;hscroll=1;vscroll=1;z=2}
+)
+/*}}*/
+
+// 配置
+var configFile = io.appData("/aardio-launcher/config.json");
+var config = {
+    apps = {};
+    bookmarks = {};
+    commands = {};
+}
+
+// 默认应用
+config.apps = {
+    {name="记事本"; path="notepad.exe"; icon="📝"};
+    {name="计算器"; path="calc.exe"; icon="🔢"};
+    {name="画图"; path="mspaint.exe"; icon="🎨"};
+    {name="资源管理器"; path="explorer.exe"; icon="📂"};
+    {name="命令提示符"; path="cmd.exe"; icon="⌨️"};
+    {name="PowerShell"; path="powershell.exe"; icon="💻"};
+    {name="任务管理器"; path="taskmgr.exe"; icon="📊"};
+    {name="注册表编辑器"; path="regedit.exe"; icon="🔧"};
+    {name="控制面板"; path="control.exe"; icon="⚙️"};
+    {name="设置"; path="ms-settings:"; icon="⚙️"};
+}
+
+config.bookmarks = {
+    {name="GitHub"; url="https://github.com/qianbkk"; icon="🌐"};
+    {name="百度"; url="https://www.baidu.com"; icon="🔍"};
+    {name="知乎"; url="https://www.zhihu.com"; icon="💡"};
+    {name="B站"; url="https://www.bilibili.com"; icon="📺"};
+}
+
+config.commands = {
+    {name="重启资源管理器"; cmd="taskkill /f /im explorer.exe & start explorer.exe"; icon="🔄"};
+    {name="清空回收站"; cmd="rd /s /q C:\$Recycle.Bin"; icon="🗑️"};
+    {name="锁屏"; cmd="rundll32.exe user32.dll,LockWorkStation"; icon="🔒"};
+    {name="关闭休眠"; cmd="powercfg -h off"; icon="⚡"};
+    {name="显示隐藏文件"; cmd="reg add HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced /v Hidden /t REG_DWORD /d 1 /f"; icon="👁️"};
+    {name="系统信息"; cmd="msinfo32"; icon="ℹ️"};
+    {name="磁盘清理"; cmd="cleanmgr"; icon="🧹"};
+    {name="DirectX诊断"; cmd="dxdiag"; icon="🎮"};
+}
+
+// 加载自定义配置
+if(fsys.isFile(configFile)){
+    try{
+        var custom = JSON.parse(string.load(configFile));
+        if(custom.apps) table.push(config.apps, custom.apps);
+        if(custom.bookmarks) table.push(config.bookmarks, custom.bookmarks);
+        if(custom.commands) table.push(config.commands, custom.commands);
+    }
+}
+
+var saveConfig = function(){
+    if(!fsys.isDir(fsys.getParentDir(configFile))) fsys.createDir(fsys.getParentDir(configFile));
+    string.save(configFile, JSON.stringify(config, true), false);
+}
+
+// 全部条目
+var allItems = {};
+var rebuildItems = function(){
+    allItems = {};
+    for(i=1; #config.apps; 1){
+        table.push(allItems, {type="app"; name=config.apps[i].name; path=config.apps[i].path; icon=config.apps[i].icon});
+    }
+    for(i=1; #config.bookmarks; 1){
+        table.push(allItems, {type="bookmark"; name=config.bookmarks[i].name; path=config.bookmarks[i].url; icon=config.bookmarks[i].icon});
+    }
+    for(i=1; #config.commands; 1){
+        table.push(allItems, {type="command"; name=config.commands[i].name; path=config.commands[i].cmd; icon=config.commands[i].icon});
+    }
+}
+rebuildItems();
+
+// 搜索
+var filterItems = function(query){
+    winform.list.clear();
+    query = string.trim(string.lower(query));
+    if(#query == 0){
+        for(i=1; #allItems; 1){
+            winform.list.add(allItems[i].icon ++ "  " ++ allItems[i].name ++ "  [" ++ allItems[i].type ++ "]");
+        }
+        return;
+    }
+    // 模糊匹配
+    for(i=1; #allItems; 1){
+        var name = string.lower(allItems[i].name);
+        // 简单 fuzzy: query 的每个字符依次在 name 中出现
+        var match = true;
+        var lastPos = 0;
+        for(j=1; #query; 1){
+            var ch = string.slice(query, j, j);
+            var pos = string.find(name, ch, lastPos + 1);
+            if(!pos){
+                match = false;
+                break;
+            }
+            lastPos = pos;
+        }
+        if(match){
+            winform.list.add(allItems[i].icon ++ "  " ++ allItems[i].name ++ "  [" ++ allItems[i].type ++ "]");
+        }
+    }
+    if(winform.list.count == 0){
+        // 命令模式: 输入 > 执行任意命令
+        if(string.startWith(query, ">")){
+            winform.list.add("⌨️  执行命令: " ++ string.trim(string.slice(query, 2)));
+        }
+        // 网址模式
+        else if(string.find(query, ".") && !string.find(query, " ")){
+            winform.list.add("🌐  打开网址: " ++ query);
+        }
+        // 路径模式
+        else if(fsys.isFile(query) or fsys.isDir(query)){
+            winform.list.add("📁  打开路径: " ++ query);
+        }
+        // 数学表达式
+        else {
+            try{
+                var result = eval(query);
+                winform.list.add("🔢  = " ++ tostring(result));
+            }
+        }
+    }
+}
+
+// 执行选中项
+var executeSelected = function(){
+    var idx = winform.list.selIndex;
+    if(!idx){
+        // 兜底:执行输入的命令
+        var text = winform.edt.text;
+        if(string.startWith(text, ">")){
+            process.execute(string.trim(string.slice(text, 2)));
+        } else if(string.find(text, ".") && !string.find(text, " ")){
+            process.execute(text);
+        } else {
+            try{
+                var result = eval(text);
+                winform.list.add("🔢  = " ++ tostring(result));
+                return;
+            }
+        }
+        winform.hide();
+        return;
+    }
+    // 找到对应 item
+    var query = string.trim(string.lower(winform.edt.text));
+    var visibleItems = {};
+    for(i=1; #allItems; 1){
+        if(#query == 0){
+            table.push(visibleItems, allItems[i]);
+        } else {
+            var name = string.lower(allItems[i].name);
+            var match = true;
+            var lastPos = 0;
+            for(j=1; #query; 1){
+                var ch = string.slice(query, j, j);
+                var pos = string.find(name, ch, lastPos + 1);
+                if(!pos){ match = false; break; }
+                lastPos = pos;
+            }
+            if(match) table.push(visibleItems, allItems[i]);
+        }
+    }
+    if(idx > #visibleItems){
+        // 用户输入的命令
+        var text = winform.edt.text;
+        if(string.startWith(text, ">")){
+            process.execute(string.trim(string.slice(text, 2)));
+        } else if(string.find(text, ".") && !string.find(text, " ")){
+            process.execute(text);
+        }
+    } else {
+        var item = visibleItems[idx];
+        if(item.type == "app"){
+            process.execute(item.path);
+        } else if(item.type == "bookmark"){
+            process.execute("explorer.exe", item.path);
+        } else if(item.type == "command"){
+            process.execute("cmd.exe", "/c " ++ item.path);
+        }
+    }
+    winform.hide();
+    winform.edt.text = "";
+}
+
+winform.edt.onChange = function(){
+    filterItems(winform.edt.text);
+}
+
+winform.edt.onOk = function(){
+    executeSelected();
+}
+
+winform.list.onDoubleClick = function(){
+    executeSelected();
+}
+
+// 上下方向键
+winform.edt.onKeyDown = function(vk){
+    if(vk == 0x28/*DOWN*/){
+        if(winform.list.count > 0){
+            var cur = winform.list.selIndex || 0;
+            cur = cur + 1;
+            if(cur > winform.list.count) cur = 1;
+            winform.list.selIndex = cur;
+        }
+    } else if(vk == 0x26/*UP*/){
+        if(winform.list.count > 0){
+            var cur = winform.list.selIndex || 1;
+            cur = cur - 1;
+            if(cur < 1) cur = winform.list.count;
+            winform.list.selIndex = cur;
+        }
+    } else if(vk == 0x1B/*ESC*/){
+        winform.hide();
+    }
+}
+
+// 全局热键 Ctrl+Space 唤起
+var hkId = winform.reghotkey(function(){
+    if(winform.visible){
+        winform.hide();
+    } else {
+        // 屏幕中央显示
+        var screenW, screenH = win.getScreen();
+        var winW, winH = winform.getRect();
+        winform.setPos((screenW - winW) / 2, screenH / 4);
+        winform.show();
+        winform.edt.setFocus();
+        winform.edt.text = "";
+        filterItems("");
+    }
+}, 0x0002/*CTRL*/, ' '#);
+
+// 失焦隐藏
+winform.onLoseFocus = function(){
+    if(winform.visible) winform.hide();
+}
+
+winform.show(false);
+win.loopMessage();

@@ -1,0 +1,196 @@
+﻿//===================================================================
+// 工具19: 屏幕录制 (调用 ffmpeg)
+// 功能: 用 ffmpeg 录制全屏/区域/GIF,质量设置
+//===================================================================
+
+import win.ui;
+import fsys;
+import process;
+import fsys.dlg;
+import time;
+
+var ffmpegPaths = {
+    "C:\\ffmpeg\\bin\\ffmpeg.exe";
+    "D:\\ffmpeg\\bin\\ffmpeg.exe";
+    "D:\\APP\\ffmpeg\\bin\\ffmpeg.exe";
+    "D:\\APPALL\\ffmpeg\\bin\\ffmpeg.exe";
+    io.appData("/ffmpeg/bin/ffmpeg.exe");
+    "C:\\Program Files\\ffmpeg\\bin\\ffmpeg.exe";
+}
+
+var findFfmpeg = function(){
+    for(i=1; #ffmpegPaths; 1){
+        if(fsys.isFile(ffmpegPaths[i])) return ffmpegPaths[i];
+    }
+    // 尝试 where
+    try{
+        var r = process("where ffmpeg");
+        var line = r.readLine();
+        if(line) return line;
+    } catch(e){}
+    return null;
+}
+
+var ffmpeg = findFfmpeg();
+var outputDir = io.appData("/aardio-screenshots/");
+if(!fsys.isDir(outputDir)) fsys.createDir(outputDir);
+
+var main = win.form(text="屏幕录制";right=500;bottom=440;border="thin")
+main.add(
+lblFfmpeg={cls="static";text="ffmpeg: " ++ (ffmpeg || "未找到 - 请安装 ffmpeg 并加入 PATH");left=10;top=10;right=490;bottom=30;color=(ffmpeg ? 0x006600 : 0xCC0000);z=1};
+lblOut={cls="static";text="输出目录:";left=10;top=35;right=80;bottom=55;z=2};
+edtOut={cls="edit";text=outputDir;left=90;top=30;right=380;bottom=55;edge=1;z=3};
+btnChoose={cls="button";text="...";left=385;top=30;right=425;bottom=55;z=4};
+btnOpen={cls="button";text="打开";left=430;top=30;right=490;bottom=55;z=5};
+
+lblArea={cls="static";text="区域: 全屏";left=10;top=70;right=80;bottom=90;z=6};
+edtX={cls="edit";text="0";left=90;top=65;right=160;bottom=90;edge=1;z=7};
+edtY={cls="edit";text="0";left=165;top=65;right=235;bottom=90;edge=1;z=8};
+edtW={cls="edit";text="0";left=240;top=65;right=310;bottom=90;edge=1;z=9};
+edtH={cls="edit";text="0";left=315;top=65;right=385;bottom=90;edge=1;z=10};
+lblHint={cls="static";text="(0=全屏)";left=390;top=70;right=490;bottom=90;color=0x999999;z=11};
+
+lblFps={cls="static";text="帧率:";left=10;top=100;right=80;bottom=120;z=12};
+cmbFps={cls="combobox";text="";left=90;top=95;right=200;bottom=120;edge=1;items={"15";"24";"30";"60"};z=13};
+lblQuality={cls="static";text="质量:";left=210;top=100;right=280;bottom=120;z=14};
+cmbQuality={cls="combobox";text="";left=290;top=95;right=490;bottom=120;edge=1;items={"低 (CRF 28)"; "中 (CRF 23)"; "高 (CRF 18)"; "极高 (CRF 15)"};z=15};
+
+lblFormat={cls="static";text="格式:";left=10;top=130;right=80;bottom=150;z=16};
+cmbFormat={cls="combobox";text="";left=90;top=125;right=250;bottom=150;edge=1;items={"mp4";"mkv";"avi";"gif";"webm"};z=17};
+lblAudio={cls="static";text="音频:";left=260;top=130;right=310;bottom=150;z=18};
+cmbAudio={cls="combobox";text="";left=320;top=125;right=490;bottom=150;edge=1;items={"无";"系统声";"麦克风";"系统+麦"};z=19};
+
+btnRecord={cls="button";text="● 开始录制 (Ctrl+F9)";left=10;top=170;right=240;bottom=210;font=LOGFONT(h=-14);foreColor=0xCC0000;z=20};
+btnStop={cls="button";text="■ 停止 (Ctrl+F10)";left=250;top=170;right=490;bottom=210;z=21};
+timer={cls="static";text="00:00:00";left=10;top=220;right=490;bottom=260;align="center";font=LOGFONT(h=-28;weight=700);z=22};
+log={cls="edit";text="";left=10;top=270;right=490;bottom=400;edge=1;hscroll=1;multiline=1;readonly=1;vscroll=1;z=23};
+status={cls="static";text="就绪";left=10;top=405;right=490;bottom=430;color=0x666666;transparent=1;z=24}
+)
+
+main.cmbFps.selIndex = 3;  // 30fps
+main.cmbQuality.selIndex = 2;  // 高
+main.cmbFormat.selIndex = 1;  // mp4
+main.cmbAudio.selIndex = 1;  // 无
+
+var logMsg = function(s){
+    main.log.appendLog(s ++ "\r\n");
+    main.log.scrollCaret();
+}
+
+var recording = false;
+var recordStart = 0;
+var recProcess = null;
+var recordPath = "";
+
+var getQuality = function(){
+    var q = main.cmbQuality.selIndex || 3;
+    if(q == 1) return 28;
+    if(q == 2) return 23;
+    if(q == 3) return 18;
+    return 15;
+}
+
+var getAudio = function(){
+    var a = main.cmbAudio.selIndex || 1;
+    if(a == 1) return "";  // 无
+    if(a == 2) return ` -f dshow -i audio="virtual-audio-capturer"`;  // 系统声
+    if(a == 3) return ` -f dshow -i audio="麦克风 (Realtek High Definition Audio)"`;  // 麦克风 (示例)
+    if(a == 4) return ` -f dshow -i audio="virtual-audio-capturer" -f dshow -i audio="麦克风 (Realtek High Definition Audio)"`;
+    return "";
+}
+
+var startRecord = function(){
+    if(!ffmpeg){
+        main.msgbox("未找到 ffmpeg.exe,请先安装 ffmpeg 并加入 PATH,或设置到本工具指定路径", "错误", 0x10);
+        return;
+    }
+    if(recording) return;
+    recording = true;
+    recordStart = time.now();
+
+    var x = tonumber(main.edtX.text) || 0;
+    var y = tonumber(main.edtY.text) || 0;
+    var w = tonumber(main.edtW.text) || 0;
+    var h = tonumber(main.edtH.text) || 0;
+    var fps = main.cmbFps.selText || "30";
+    var crf = getQuality();
+    var format = main.cmbFormat.selText || "mp4";
+    var audio = getAudio();
+
+    if(w == 0 || h == 0){
+        var sw, sh = win.getScreen();
+        if(w == 0) w = sw;
+        if(h == 0) h = sh;
+    }
+
+    var ext = format;
+    if(format == "gif") ext = "gif";
+    var filename = "rec-" ++ time.format(time.now(), "%Y%m%d_%H%M%S") ++ "." ++ ext;
+    recordPath = winform.edtOut.text ++ "\\" ++ filename;
+
+    var cmd;
+    if(format == "gif"){
+        // GIF 用 palette
+        cmd = string.format(
+            '%s -f gdigrab -framerate %s -offset_x %d -offset_y %d -video_size %dx%d -i desktop -vf "fps=%s,scale=%d:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse" %s',
+            ffmpeg, fps, x, y, w, h, fps, math.min(w, 800), recordPath
+        );
+    } else {
+        var codec = format == "webm" ? "libvpx-vp9" : "libx264";
+        if(format == "webm") crf = crf ++ "-b:v 0";
+        cmd = string.format(
+            '%s -f gdigrab -framerate %s -offset_x %d -offset_y %d -video_size %dx%d -i desktop%s -c:v %s -crf %d -pix_fmt yuv420p %s',
+            ffmpeg, fps, x, y, w, h, audio, codec, crf, recordPath
+        );
+    }
+
+    logMsg("开始录制: " ++ recordPath);
+    logMsg("命令: " ++ cmd);
+
+    recProcess = process(cmd, , , , 0);  // 后台运行
+}
+
+var stopRecord = function(){
+    if(!recording) return;
+    recording = false;
+    try{
+        // ffmpeg 用 q 退出
+        recProcess.write("q");
+        recProcess.wait();
+    } catch(e){
+        logMsg("停止出错: " ++ tostring(e));
+    }
+    logMsg("录制完成: " ++ recordPath);
+    main.status.text = "已保存: " ++ recordPath;
+    if(main.msgbox("录制完成!\n" ++ recordPath ++ "\n\n是否打开?", "完成", 0x24) == 6){
+        process.explore(fsys.getParentDir(recordPath));
+    }
+}
+
+var updateTimer = function(){
+    if(!recording) return;
+    var elapsed = time.now() - recordStart;
+    var h = math.floor(elapsed / 3600000);
+    var m = math.floor((elapsed % 3600000) / 60000);
+    var s = math.floor((elapsed % 60000) / 1000);
+    main.timer.text = string.format("%02d:%02d:%02d", h, m, s);
+}
+
+main.setInterval(200, updateTimer);
+
+main.btnRecord.oncommand = startRecord;
+main.btnStop.oncommand = stopRecord;
+main.btnChoose.oncommand = function(){
+    var dir = fsys.dlg.dir("选择输出目录", main.edtOut.text);
+    if(dir) main.edtOut.text = dir;
+};
+main.btnOpen.oncommand = function(){
+    process.explore(main.edtOut.text);
+};
+
+// 全局热键
+main.reghotkey(startRecord, 0, 0x78/*VK_F9*/);
+main.reghotkey(stopRecord, 0, 0x79/*VK_F10*/);
+
+main.show();
+win.loopMessage();

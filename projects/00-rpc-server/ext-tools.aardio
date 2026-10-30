@@ -1,0 +1,520 @@
+﻿//===================================================================
+// ext-tools.aardio — 扩展工具模块 (模块二)
+// 挂载方式: 被 main.aardio 主线程用 loadcodex 加载, 顶层直接注册到全局 api 表
+// 用法: loadcodex(".../ext-tools.aardio")();  (api 必须是全局变量)
+// 端点清单 (全部只依赖标准库, 需在 main.aardio 的 onThreadCreated import):
+//   import gdip; import gdip.bitmap; import gdip.graphics; import gdip.family;
+//   import gdip.stringFormat; import crypt.aes; import wsock.tcp;
+//===================================================================
+
+
+
+    // ========== 1. 图片批处理 (对应工具13) ==========
+
+    // 图片缩放: /api/img/resize?src=&dst=&w=&h=&mode=
+    api["/api/img/resize"] = function(response, request){
+        var src = request.get.src;
+        var dst = request.get.dst || src;
+        var w = tonumber(request.get.w) || 0;
+        var h = tonumber(request.get.h) || 0;
+        if(!src || w == 0 || h == 0){
+            response.write(JSON.stringify({ok=false; error="需要 src 和 w,h"}, true)); return;
+        }
+        try{
+            var bmp = gdip.bitmap(src);
+            if(!bmp){ response.write(JSON.stringify({ok=false; error="无法加载图片: " ++ src}, true)); return; }
+            var outBmp = bmp.resize(w, h, request.get.mode || "scale");
+            outBmp.save(dst);
+            var r = {ok=true; src=src; dst=dst; width=outBmp.width; height=outBmp.height};
+            outBmp.delete();
+            bmp.delete();
+            response.write(JSON.stringify(r, true));
+        } catch(e){
+            response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+        }
+    };
+
+    // 格式转换/压缩: /api/img/convert?src=&dst=&quality=
+    api["/api/img/convert"] = function(response, request){
+        var src = request.get.src;
+        var dst = request.get.dst;
+        if(!src || !dst){
+            response.write(JSON.stringify({ok=false; error="需要 src 和 dst"}, true)); return;
+        }
+        try{
+            var bmp = gdip.bitmap(src);
+            if(!bmp){ response.write(JSON.stringify({ok=false; error="无法加载图片"}, true)); return; }
+            bmp.save(dst);
+            var size = io.getSize(dst);
+            var r = {ok=true; src=src; dst=dst; size=size; width=bmp.width; height=bmp.height};
+            bmp.delete();
+            response.write(JSON.stringify(r, true));
+        } catch(e){
+            response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+        }
+    };
+
+    // 文字水印: /api/img/watermark?src=&dst=&text=&color=&size=&pos=
+    // pos: br(右下默认) tl(左上) tr(右上) bl(左下) center(居中)
+    // 注意: 用 bmp.getGraphics() 获取画布, gdip.graphics/family/stringFormat 在 EXE
+    //       模式未嵌入, 函数内 try-import, 失败则返回错误 (不影响其他端点)
+    api["/api/img/watermark"] = function(response, request){
+        var src = request.get.src;
+        var dst = request.get.dst || src;
+        var text = request.get.text || "aardio";
+        if(!src){
+            response.write(JSON.stringify({ok=false; error="需要 src"}, true)); return;
+        }
+        try{
+            import gdip.graphics;
+            import gdip.family;
+            import gdip.stringFormat;
+            var bmp = gdip.bitmap(src);
+            if(!bmp){ response.write(JSON.stringify({ok=false; error="无法加载图片"}, true)); return; }
+            var graphics = bmp.getGraphics();
+            graphics.textRenderingHint = 3/*_TextRenderingHintAntiAliasGridFit*/;
+
+            var argb = 0x80000000;  // 半透明黑
+            try{ argb = tonumber("0x" ++ (request.get.color || "80000000")) } catch(e){}
+            var brush = gdip.solidBrush(argb);
+
+            var strFormat = gdip.stringFormat();
+            strFormat.align = 0;
+            strFormat.lineAlign = 0;
+
+            var family = gdip.family("微软雅黑");
+            var font = family.createFont(tonumber(request.get.size) || 16, 0, 3/*_UnitPoint*/);
+
+            var rc = ::RECTF(0, 0, bmp.width, bmp.height);
+            var measureRc = graphics.measureString(text, font, rc, strFormat, brush);
+            rc.x = 0; rc.y = 0;
+            var pos = request.get.pos || "br";
+            if(pos == "br"){ rc.x = bmp.width - measureRc.width; rc.y = bmp.height - measureRc.height; }
+            else if(pos == "tr"){ rc.x = bmp.width - measureRc.width; rc.y = 0; }
+            else if(pos == "bl"){ rc.x = 0; rc.y = bmp.height - measureRc.height; }
+            else if(pos == "center"){ rc.x = (bmp.width - measureRc.width) / 2; rc.y = (bmp.height - measureRc.height) / 2; }
+            else { rc.x = 0; rc.y = 0; }
+
+            graphics.drawString(text, font, rc, strFormat, brush);
+            bmp.save(dst);
+
+            var r = {ok=true; src=src; dst=dst; text=text; pos=pos; width=bmp.width; height=bmp.height};
+            graphics.delete();
+            bmp.delete();
+            response.write(JSON.stringify(r, true));
+        } catch(e){
+            response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+        }
+    };
+
+    // ========== 2. 二维码 (对应工具21) ==========
+
+    // 生成二维码: /api/qr/generate?text=&path=&size=
+    // 用免费在线 API (api.qrserver.com) 生成 PNG
+    api["/api/qr/generate"] = function(response, request){
+        var text = request.get.text;
+        var path = request.get.path;
+        var size = tonumber(request.get.size) || 300;
+        if(!text || !path){
+            response.write(JSON.stringify({ok=false; error="需要 text 和 path"}, true)); return;
+        }
+        try{
+            var http = inet.http();
+            var url = "https://api.qrserver.com/v1/create-qr-code/?size=" ++ size ++ "x" ++ size ++ "&data=" ++ inet.url.encode(text);
+            var png = http.get(url);
+            if(!png || #png < 100){ response.write(JSON.stringify({ok=false; error="二维码 API 返回异常", len=#png}, true)); return; }
+            string.save(path, png, false);
+            var r = {ok=true; path=path; size=size; bytes=#png; text=text};
+            response.write(JSON.stringify(r, true));
+        } catch(e){
+            response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+        }
+    };
+
+    // 识别二维码: /api/qr/read?path=  (zbar 扩展库未装, 用在线识别 API)
+    api["/api/qr/read"] = function(response, request){
+        var path = request.get.path;
+        if(!path){ response.write(JSON.stringify({ok=false; error="需要 path"}, true)); return; }
+        try{
+            var http = inet.http();
+            var url = "https://api.qrserver.com/v1/read-qr-code/?fileurl=" ++ inet.url.encode("file:///" ++ path);
+            var body = http.get(url);
+            response.write(JSON.stringify({ok=true; raw=body}, true));
+        } catch(e){
+            response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+        }
+    };
+
+    // ========== 3. RSS 阅读 (对应工具16) ==========
+
+    // 抓取并解析 RSS: /api/rss/fetch?url=&max=
+    // 注意: 辅助函数必须定义在端点函数内部 (端点跑在 worker 线程, 主线程 global 的
+    //       自定义函数在 worker 线程不可见; 而内置库/标准库已由 onThreadCreated import)
+    api["/api/rss/fetch"] = function(response, request){
+        var url = request.get.url;
+        var max = tonumber(request.get.max) || 20;
+        if(!url){ response.write(JSON.stringify({ok=false; error="缺少 url"}, true)); return; }
+        // 从 XML 块提取标签内容 (用 string.indexOf 字面查找, find 会把 <> 当模式元字符)
+        var xmlTag = function(xml, tag){
+            var openTag = "<" ++ tag ++ ">";
+            var closeTag = "</" ++ tag ++ ">";
+            var oPos = string.indexOf(xml, openTag);
+            if(!oPos) return "";
+            var cPos = string.indexOf(xml, closeTag, oPos + #openTag);
+            if(!cPos) return "";
+            // indexOf 返回的是 1-based 位置, openTag 从 oPos 开始占 #openTag 位, 内容从 oPos+#openTag 起, 到 cPos-1 止
+            var content = string.slice(xml, oPos + #openTag, cPos - 1);
+            // 清理 CDATA 包装
+            content = string.replaceLiteral(content, "<![CDATA[", "");
+            content = string.replaceLiteral(content, "]]>", "");
+            return content;
+        };
+        try{
+            var http = inet.http();
+            var xml = http.get(url);
+            if(!xml){ response.write(JSON.stringify({ok=false; error="抓取失败"}, true)); return; }
+            // 解析 channel 标题
+            var feedTitle = xmlTag(xml, "title");
+            // 解析 items: 用 string.indexOf 字面定位 <item>...</item> (find 会误匹配 /item)
+            var items = {};
+            var pos = 1;
+            while(#items < max){
+                var itemStart = string.indexOf(xml, "<item>", pos);
+                if(!itemStart) break;
+                var itemEnd = string.indexOf(xml, "</item>", itemStart + 6);
+                if(!itemEnd) break;
+                var itemXml = string.slice(xml, itemStart + 6, itemEnd - 1);
+                var title = xmlTag(itemXml, "title");
+                var link = xmlTag(itemXml, "link");
+                var desc = xmlTag(itemXml, "description");
+                var pubDate = xmlTag(itemXml, "pubDate");
+                table.push(items, {title=title; link=link; description=desc; pubDate=pubDate});
+                pos = itemEnd + 7;
+            }
+            response.write(JSON.stringify({ok=true; feed=feedTitle; count=#items; items=items}, true));
+        } catch(e){
+            response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+        }
+    };
+
+    // ========== 4. 密码管理 (对应工具29) ==========
+
+    // AES 加密存值: /api/vault/set?key=&value=&pass=
+    api["/api/vault/set"] = function(response, request){
+        var key = request.get.key;
+        var value = request.get.value;
+        var pass = request.get.pass;
+        if(!key || !value || !pass){
+            response.write(JSON.stringify({ok=false; error="需要 key, value, pass"}, true)); return;
+        }
+        try{
+            var aes = crypt.aes();
+            aes.setPassword(pass);
+            var ciphertext = crypt.encodeBin(aes.encrypt(value));
+            var data = {};
+            var file = io.appData("/aardio-vault/vault.json");
+            if(fsys.isFile(file)){
+                try{ data = JSON.parse(string.load(file)) } catch(e){}
+            }
+            data[key] = ciphertext;
+            if(!fsys.isDir(fsys.getParentDir(file))) fsys.createDir(fsys.getParentDir(file));
+            string.save(file, JSON.stringify(data, true), false);
+            response.write(JSON.stringify({ok=true; key=key; encrypted=#ciphertext}, true));
+        } catch(e){
+            response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+        }
+    };
+
+    // 解密取值: /api/vault/get?key=&pass=
+    api["/api/vault/get"] = function(response, request){
+        var key = request.get.key;
+        var pass = request.get.pass;
+        if(!key || !pass){
+            response.write(JSON.stringify({ok=false; error="需要 key 和 pass"}, true)); return;
+        }
+        try{
+            var file = io.appData("/aardio-vault/vault.json");
+            if(!fsys.isFile(file)){ response.write(JSON.stringify({ok=false; error="保险库不存在"}, true)); return; }
+            var data = JSON.parse(string.load(file));
+            if(!data[key]){ response.write(JSON.stringify({ok=false; error="key 不存在: " ++ key}, true)); return; }
+            var aes = crypt.aes();
+            aes.setPassword(pass);
+            var plain = aes.decrypt(crypt.decodeBin(data[key]));
+            response.write(JSON.stringify({ok=true; key=key; value=plain}, true));
+        } catch(e){
+            response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+        }
+    };
+
+    // 列出所有 key: /api/vault/list
+    api["/api/vault/list"] = function(response, request){
+        try{
+            var file = io.appData("/aardio-vault/vault.json");
+            if(!fsys.isFile(file)){ response.write(JSON.stringify({ok=true; keys={}}, true)); return; }
+            var data = JSON.parse(string.load(file));
+            var keys = {};
+            for(k, v in data) table.push(keys, k);
+            response.write(JSON.stringify({ok=true; count=#keys; keys=keys}, true));
+        } catch(e){
+            response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+        }
+    };
+
+    // ========== 5. 端口扫描 (aardio 自带工具能力) ==========
+
+    // /api/scan/ports?host=&ports=80,443,3389&timeout=
+    api["/api/scan/ports"] = function(response, request){
+        var host = request.get.host || "127.0.0.1";
+        var portsStr = request.get.ports || "80,443,3389";
+        var timeout = tonumber(request.get.timeout) || 1500;
+        if(!host){ response.write(JSON.stringify({ok=false; error="缺少 host"}, true)); return; }
+        try{
+            var ports = {};
+            var portList = string.split(portsStr, ",");
+            for(i, p in portList){
+                var pt = tonumber(string.trim(p));
+                if(pt) table.push(ports, pt);
+            }
+            var openList = {};
+            var closedList = {};
+            for(i, port in ports){
+                try{
+                    var tcp = wsock.tcp.client();
+                    tcp.settimeout(timeout);
+                    if(tcp.connect(host, port)){
+                        table.push(openList, port);
+                        tcp.close();
+                    } else {
+                        table.push(closedList, port);
+                    }
+                } catch(e){
+                    table.push(closedList, port);
+                }
+            }
+            response.write(JSON.stringify({ok=true; host=host; open=openList; closed=closedList}, true));
+        } catch(e){
+            response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+        }
+    };
+
+    // ========== 6. 批量重命名 (对应工具22) ==========
+
+    // /api/rename?path=&old=&new=&dry=1   (old→new 全局替换文件名)
+    api["/api/rename"] = function(response, request){
+        var path = request.get.path;
+        var oldStr = request.get.old;
+        var newStr = request.get.new;
+        var dry = request.get.dry;   // dry=1 只预览
+        if(!path || !oldStr || newStr === null){
+            response.write(JSON.stringify({ok=false; error="需要 path, old, new"}, true)); return;
+        }
+        try{
+            var files, folders = fsys.list(path);
+            var renamed = {};
+            var count = 0;
+            for(i, name in files){
+                if(string.find(name, oldStr, 1, true)){
+                    var newName = string.replaceLiteral(name, oldStr, newStr);
+                    if(newName != name){
+                        table.push(renamed, {from=name; to=newName});
+                        count = count + 1;
+                    }
+                }
+            }
+            if(!dry){
+                for(i, item in renamed){
+                    fsys.rename(path ++ "\\" ++ item.from, path ++ "\\" ++ item.to);
+                }
+            }
+            response.write(JSON.stringify({ok=true; dir=path; dry= !!dry; count=count; items=renamed}, true));
+        } catch(e){
+            response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+        }
+    };
+
+    // ========== 7. 翻译 (对应工具20, 免费 API) ==========
+
+    // /api/translate?text=&to=zh-CN&from=en
+    api["/api/translate"] = function(response, request){
+        var text = request.get.text;
+        var to = request.get.to || "zh-CN";
+        var from = request.get.from || "auto";
+        if(!text){ response.write(JSON.stringify({ok=false; error="缺少 text"}, true)); return; }
+        try{
+            var http = inet.http();
+            var url = "https://api.mymemory.translated.net/get?q=" ++ inet.url.encode(text)
+                   ++ "&langpair=" ++ inet.url.encode((from == "auto" ? "en" : from) ++ "|" ++ to);
+            var body = http.get(url);
+            var resp = JSON.parse(body);
+            if(resp.responseData && resp.responseData.translatedText){
+                response.write(JSON.stringify({ok=true; text=text; translated=resp.responseData.translatedText; match=resp.responseData.match}, true));
+            } else {
+                response.write(JSON.stringify({ok=false; error="翻译服务返回异常"; raw=body}, true));
+            }
+        } catch(e){
+            response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+        }
+    };
+
+// ========== 7. 文本/格式化/待办工具 (原核心模块移入, 模块二) ==========
+// 注意: md2html / todo_load / todo_save 由 main.aardio 的 onThreadCreated
+//       在 worker 线程全局定义, 端点函数直接引用 (勿在 ext 重复定义)
+
+// Markdown 转 HTML
+api["/api/format/markdown"] = function(response, request){
+    var text = request.get.text || "";
+    try{
+        var html = md2html(text);
+        response.write(JSON.stringify({ok=true; length=#text; html=html}, true));
+    } catch(e){
+        response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+    }
+};
+
+// JSON 格式化/校验
+api["/api/format/json"] = function(response, request){
+    var text = request.get.text || "";
+    if(#text == 0){ response.write(JSON.stringify({ok=false; error="缺少 text"}, true)); return; }
+    try{
+        var obj = JSON.parse(text);
+        response.write(JSON.stringify({ok=true; formatted=JSON.stringify(obj, true); type=type(obj)}, true));
+    } catch(e){
+        response.write(JSON.stringify({ok=false; error="JSON 解析失败: " ++ tostring(e)}, true));
+    }
+};
+
+// 正则测试
+api["/api/regex/test"] = function(response, request){
+    var pattern = request.get.pattern;
+    var text = request.get.text || "";
+    var flags = request.get.flags || "";
+    if(!pattern){ response.write(JSON.stringify({ok=false; error="缺少 pattern"}, true)); return; }
+    try{
+        var matches = {};
+        for(m in string.regex.gmatch(text, pattern, flags)){
+            table.push(matches, m);
+        }
+        response.write(JSON.stringify({ok=true; pattern=pattern; count=#matches; matches=matches}, true));
+    } catch(e){
+        response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+    }
+};
+
+// 天气 (wttr.in 免费接口, city 用英文名, 默认南京)
+api["/api/weather"] = function(response, request){
+    var city = request.get.city || "nanjing";
+    try{
+        var http = inet.http();
+        var body = http.get("https://wttr.in/" ++ inet.url.encode(city) ++ "?format=j1");
+        var data = JSON.parse(body);
+        var cur = data.current_condition[1];
+        var area = data.nearest_area[1];
+        var weather = {
+            city = city;
+            area = area ? (area.areaName[1].value) : city;
+            tempC = tonumber(cur.temp_C);
+            feelsC = tonumber(cur.FeelsLikeC);
+            humidity = cur.humidity;
+            windKmh = tonumber(cur.windspeedKmph);
+            desc = cur.weatherDesc[1].value;
+            obsTime = cur.observation_time;
+        };
+        response.write(JSON.stringify({ok=true; weather=weather}, true));
+    } catch(e){
+        response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+    }
+};
+
+// Base64 编解码
+api["/api/text/base64"] = function(response, request){
+    var text = request.get.text || "";
+    var decode = request.get.decode == "1" || request.get.decode == "true";
+    try{
+        if(decode){
+            var out = crypt.bin.decodeBase64(text);
+            response.write(JSON.stringify({ok=true; op="decode"; result=out}, true));
+        } else {
+            var out = crypt.bin.encodeBase64(text);
+            response.write(JSON.stringify({ok=true; op="encode"; result=out}, true));
+        }
+    } catch(e){
+        response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+    }
+};
+
+// 文本统计
+api["/api/text/count"] = function(response, request){
+    var text = request.get.text || "";
+    var lines = 0;
+    for(l in string.lines(text)) lines = lines + 1;
+    response.write(JSON.stringify({
+        ok=true;
+        chars = #text;
+        lines = lines;
+        words = #string.split(string.trim(text), "%s+");
+    }, true));
+};
+
+// Todo 管理 (存储到用户数据目录, worker 线程全局 todo_load/todo_save)
+api["/api/todo/list"] = function(response, request){
+    var list = todo_load();
+    response.write(JSON.stringify({ok=true; count=#list.items; items=list.items}, true));
+};
+
+api["/api/todo/add"] = function(response, request){
+    var text = request.get.text;
+    if(!text){ response.write(JSON.stringify({ok=false; error="缺少 text"}, true)); return; }
+    var priority = tonumber(request.get.priority) || 0;
+    var list = todo_load();
+    var id = list.nextId;
+    list.nextId = id + 1;
+    table.push(list.items, {id=id; text=text; priority=priority; done=false; created=time.now()});
+    todo_save(list);
+    response.write(JSON.stringify({ok=true; id=id; count=#list.items}, true));
+};
+
+api["/api/todo/done"] = function(response, request){
+    var id = tonumber(request.get.id);
+    if(!id){ response.write(JSON.stringify({ok=false; error="缺少 id"}, true)); return; }
+    var list = todo_load();
+    var found = false;
+    for(i=1; #list.items; 1){
+        if(list.items[i].id == id){
+            list.items[i].done = true;
+            found = true;
+            break;
+        }
+    }
+    if(found){ todo_save(list); response.write(JSON.stringify({ok=true; id=id}, true)); }
+    else response.write(JSON.stringify({ok=false; error="未找到 id=" ++ id}, true));
+};
+
+api["/api/todo/clear"] = function(response, request){
+    var list = todo_load();
+    list.items = {};
+    todo_save(list);
+    response.write(JSON.stringify({ok=true}, true));
+};
+
+// ===== 扩展端点帮助表 (被 main.aardio 的 /api/help 动态合并) =====
+api["__ext_help__"] = {
+    "GET /api/format/markdown?text="="Markdown 转 HTML (ext)";
+    "GET /api/format/json?text="="JSON 格式化/校验 (ext)";
+    "GET /api/regex/test?pattern=&text="="正则测试 (ext)";
+    "GET /api/weather?city=nanjing"="天气 (ext)";
+    "GET /api/text/base64?text=&decode=1"="Base64 编解码 (ext)";
+    "GET /api/text/count?text="="文本统计 (ext)";
+    "GET /api/todo/list|add|done|clear"="待办管理 (ext)";
+    "GET /api/img/resize?src=&dst=&w=&h="="图片缩放 (ext)";
+    "GET /api/img/convert?src=&dst="="图片格式转换 (ext)";
+    "GET /api/img/watermark?src=&dst=&text="="图片水印 (ext)";
+    "GET /api/qr/generate?text=&path="="生成二维码 (ext)";
+    "GET /api/qr/read?path="="识别二维码 (ext)";
+    "GET /api/rss/fetch?url="="抓取 RSS (ext)";
+    "GET /api/vault/set?key=&value=&pass="="AES 加密存储 (ext)";
+    "GET /api/vault/get?key=&pass="="解密读取 (ext)";
+    "GET /api/vault/list"="列出保险库 key (ext)";
+    "GET /api/scan/ports?host=&ports="="端口扫描 (ext)";
+    "GET /api/rename?path=&old=&new=&dry=1"="批量重命名 (ext)";
+    "GET /api/translate?text=&to="="翻译 (ext)";
+};

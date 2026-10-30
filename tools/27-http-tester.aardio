@@ -1,0 +1,218 @@
+﻿//===================================================================
+// 工具27: HTTP API 测试工具 (Postman 替代)
+// 功能: REST 客户端,支持所有方法,请求历史,环境变量
+//===================================================================
+
+import win.ui;
+import inet.http;
+import JSON;
+import fsys;
+import time;
+
+var dataFile = io.appData("/aardio-http-tester/history.json");
+var history = {};
+if(fsys.isFile(dataFile)){
+    try{
+        var c = string.load(dataFile);
+        if(c) history = JSON.parse(c);
+    }
+}
+if(!history.requests) history = {requests={}; environments={}};
+
+var saveHistory = function(){
+    if(!fsys.isDir(fsys.getParentDir(dataFile))) fsys.createDir(fsys.getParentDir(dataFile));
+    string.save(dataFile, JSON.stringify(history, true), false);
+}
+
+var main = win.form(text="HTTP API 测试工具";right=1000;bottom=650;border="thin")
+main.add(
+toolbar={cls="bk";left=0;top=0;right=1000;bottom=40;bgcolor=0xF0F0F0;z=1};
+cmbMethod={cls="combobox";text="";left=10;top=8;right=100;bottom=32;edge=1;items={"GET";"POST";"PUT";"DELETE";"PATCH";"HEAD";"OPTIONS"};z=2};
+edtUrl={cls="edit";text="https://api.github.com/users/aardio";left=105;top=8;right=850;bottom=32;edge=1;font=LOGFONT(h=-13);z=3};
+btnSend={cls="button";text="发送";left=855;top=8;right=920;bottom=32;z=4};
+btnSave={cls="button";text="保存";left=925;top=8;right=990;bottom=32;z=5};
+
+tabs={cls="bk";left=0;top=40;right=1000;bottom=65;bgcolor=0xE8E8E8;z=6};
+tabHeaders={cls="button";text="Headers";left=10;top=42;right=90;bottom=62;z=7};
+tabBody={cls="button";text="Body";left=95;top=42;right=170;bottom=62;z=8};
+tabParams={cls="button";text="Params";left=175;top=42;right=260;bottom=62;z=9};
+tabAuth={cls="button";text="Auth";left=265;top=42;right=340;bottom=62;z=10};
+
+headers={cls="listview";left=10;top=70;right=990;bottom=200;edge=1;fullRow=1;grid=1;z=11};
+headers.insertColumn("Key", 200);
+headers.insertColumn("Value", 770);
+
+bodyArea={cls="edit";text="";left=10;top=70;right=990;bottom=200;edge=1;hscroll=1;multiline=1;vscroll=1;font=LOGFONT(name="Consolas";h=-12);hide=1;z=12};
+
+params={cls="listview";left=10;top=70;right=990;bottom=200;edge=1;fullRow=1;grid=1;hide=1;z=13};
+params.insertColumn("Key", 200);
+params.insertColumn("Value", 770);
+
+auth={cls="edit";text="";left=10;top=70;right=990;bottom=200;edge=1;hscroll=1;multiline=1;vscroll=1;font=LOGFONT(name="Consolas";h=-12);hide=1;z=14};
+
+tabsBottom={cls="bk";left=0;top=205;right=1000;bottom=230;bgcolor=0xE8E8E8;z=15};
+tabResponse={cls="button";text="Response";left=10;top=207;right=100;bottom=227;z=16};
+
+responseHeaders={cls="edit";text="";left=10;top=235;right=990;bottom=280;bgcolor=0xF0F8FF;edge=1;hscroll=1;multiline=1;readonly=1;vscroll=1;font=LOGFONT(name="Consolas";h=-11);hide=1;z=17};
+responseBody={cls="edit";text="";left=10;top=235;right=990;bottom=600;edge=1;hscroll=1;multiline=1;readonly=1;vscroll=1;font=LOGFONT(name="Consolas";h=-12);z=18};
+
+historyList={cls="listbox";text="";left=10;top=605;right=990;bottom=645;edge=1;hide=1;vscroll=1;z=19};
+
+status={cls="static";text="就绪";left=10;top=610;right=990;bottom=645;color=0x666666;transparent=1;z=20}
+)
+
+var showTab = function(name){
+    main.headers.hide = true;
+    main.bodyArea.hide = true;
+    main.params.hide = true;
+    main.auth.hide = true;
+    main[name].hide = false;
+}
+showTab("headers");
+
+main.tabHeaders.oncommand = function(){ showTab("headers"); }
+main.tabBody.oncommand = function(){ showTab("bodyArea"); }
+main.tabParams.oncommand = function(){ showTab("params"); }
+main.tabAuth.oncommand = function(){ showTab("auth"); }
+
+main.tabResponse.oncommand = function(){
+    if(main.responseBody.hide){
+        main.responseBody.hide = false;
+        main.responseHeaders.hide = true;
+    } else {
+        main.responseBody.hide = true;
+        main.responseHeaders.hide = false;
+    }
+}
+
+var send = function(){
+    var method = main.cmbMethod.selText || "GET";
+    var url = string.trim(main.edtUrl.text);
+    if(#url == 0){
+        main.status.text = "请输入 URL";
+        return;
+    }
+    main.status.text = "请求中...";
+    main.btnSend.disabled = true;
+
+    // 收集 headers
+    var headers = {};
+    for(i=1; main.headers.count; 1){
+        var k = main.headers.getItemText(i, 1);
+        var v = main.headers.getItemText(i, 2);
+        if(#k > 0) headers[k] = v;
+    }
+
+    // 收集 params (添加到 URL)
+    var paramStr = "";
+    for(i=1; main.params.count; 1){
+        var k = main.params.getItemText(i, 1);
+        var v = main.params.getItemText(i, 2);
+        if(#k > 0){
+            if(string.find(url, "?")){
+                paramStr = paramStr ++ "&";
+            } else {
+                paramStr = paramStr ++ "?";
+            }
+            paramStr = paramStr ++ inet.url.encode(k) ++ "=" ++ inet.url.encode(v);
+        }
+    }
+    url = url ++ paramStr;
+
+    thread.invoke(
+        function(winform, method, url, headers, body){
+            try{
+                import inet.http;
+                var startTime = time.now();
+                // web.rest 库不存在, 用 inet.http (setHeader 同名兼容)
+                var http = inet.http();
+                // 添加 headers
+                for(k, v in headers){
+                    http.setHeader(k, v);
+                }
+                // 添加 body
+                var bodyData = null;
+                if(#body > 0){
+                    try{
+                        bodyData = JSON.parse(body);
+                    } catch(e){
+                        bodyData = body;
+                    }
+                }
+                var resp, err;
+                var postdata = (method == "GET" || method == "DELETE" || method == "HEAD" || method == "OPTIONS") ? null : bodyData;
+                try{
+                    resp = http.request(url, postdata, null, null, null, method);
+                    err = null;
+                } catch(e){
+                    err = tostring(e);
+                }
+                var elapsed = time.now() - startTime;
+                // 显示响应
+                var respStr = "";
+                if(err){
+                    respStr = "[错误]\r\n" ++ tostring(err);
+                } else {
+                    if(type(resp) == "table" || type(resp) == "string"){
+                        try{
+                            respStr = JSON.stringify(resp, true);
+                        } catch(e){
+                            respStr = tostring(resp);
+                        }
+                    } else {
+                        respStr = tostring(resp);
+                    }
+                }
+                winform.responseBody.text = respStr;
+                winform.responseHeaders.text = "状态: " ++ tostring(method) ++ " " ++ url ++ "\r\n耗时: " ++ elapsed ++ " ms\r\n大小: " ++ #respStr ++ " 字节";
+                winform.status.text = "完成 - " ++ elapsed ++ " ms - " ++ #respStr ++ " 字节";
+                // 历史
+                table.push(winform_history.requests, {
+                    t = time.now();
+                    method = method;
+                    url = url;
+                    elapsed = elapsed;
+                    size = #respStr;
+                });
+                if(#winform_history.requests > 50) table.remove(winform_history.requests, 1);
+                saveHistory();
+            } catch(e){
+                winform.responseBody.text = "[异常] " ++ tostring(e);
+                winform.status.text = "异常";
+            }
+            winform.btnSend.disabled = false;
+        },
+        main, method, url, headers, main.bodyArea.text
+    )
+}
+
+main.btnSend.oncommand = send;
+main.edtUrl.onOk = function(ctrl){
+    if(!ctrl) send();
+}
+
+// 历史点击
+main.btnSave.oncommand = function(){
+    var req = {
+        method = main.cmbMethod.selText || "GET";
+        url = main.edtUrl.text;
+        headers = {};
+        body = main.bodyArea.text;
+    }
+    for(i=1; main.headers.count; 1){
+        var k = main.headers.getItemText(i, 1);
+        var v = main.headers.getItemText(i, 2);
+        if(#k > 0) req.headers[k] = v;
+    }
+    table.push(history.requests, req);
+    saveHistory();
+    main.status.text = "已保存";
+}
+
+// 默认 headers
+main.headers.addItem({"User-Agent"; "aardio-http-tester/1.0"});
+main.headers.addItem({"Accept"; "application/json"});
+
+// 启动
+main.show();
+win.loopMessage();

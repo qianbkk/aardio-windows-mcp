@@ -1,0 +1,38 @@
+// 极简测试 - 只 import,确认所有 import 能成功
+import console;
+
+console.log("Test 1: import win.clip");
+import win.clip;
+console.log("OK: win.clip loaded");
+
+console.log("Test 2: import win.clip.bitmap");
+import win.clip.bitmap;
+console.log("OK: win.clip.bitmap loaded");
+
+console.log("Test 3: import wsock.tcp.simpleHttpServer");
+import wsock.tcp.simpleHttpServer;
+console.log("OK: wsock.tcp.simpleHttpServer loaded");
+
+console.log("Test 4: import JSON");
+import JSON;
+console.log("OK: JSON loaded");
+
+console.log("Test 5: import process");
+import process;
+console.log("OK: process loaded");
+
+console.log("Test 6: import fsys");
+import fsys;
+console.log("OK: fsys loaded");
+
+console.log("Test 7: read clipboard");
+var c = win.clip.read();
+console.log("OK: clipboard = " ++ (c ? tostring(c) : "null") ++ " (length " ++ (c ? #c : 0) ++ ")");
+
+console.log("Test 8: write then read clipboard");
+win.clip.write("hello aardio test " ++ time.now());
+var c2 = win.clip.read();
+console.log("OK: clipboard = " ++ tostring(c2));
+
+console.log("All imports and clipboard tests passed!");
+console.pause();

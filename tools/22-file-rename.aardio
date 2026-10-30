@@ -1,0 +1,208 @@
+//===================================================================
+// 工具22: 批量文件重命名
+// 功能: 多种规则重命名,支持正则,实时预览
+//===================================================================
+
+import win.ui;
+import fsys;
+import time;
+import string.regex;   // 标准库正则, 替代不存在的 preg 扩展库
+
+var main = win.form(text="批量文件重命名";right=820;bottom=600;border="thin")
+main.add(
+lblSrc={cls="static";text="目录:";left=10;top=10;right=80;bottom=30;z=1};
+edtSrc={cls="edit";text="";left=90;top=5;right=700;bottom=30;edge=1;z=2};
+btnChoose={cls="button";text="选择...";left=705;top=5;right=810;bottom=30;z=3};
+lblMask={cls="static";text="过滤 (通配符):";left=10;top=40;right=100;bottom=60;z=4};
+edtMask={cls="edit";text="*.*";left=110;top=35;right=300;bottom=60;edge=1;z=5};
+chkRecursive={cls="checkbox";text="递归子目录";left=310;top=38;right=430;bottom=58;z=6};
+btnScan={cls="button";text="扫描";left=440;top=35;right=510;bottom=60;z=7};
+
+grpRule={cls="groupbox";text="重命名规则";left=10;top=70;right=810;bottom=290;edge=1;z=8};
+lblRule={cls="static";text="选择规则:";left=20;top=90;right=120;bottom=110;z=9};
+cmbRule={cls="combobox";text="";left=130;top=85;right=400;bottom=110;edge=1;items={"添加前缀"; "添加后缀"; "替换文本"; "正则替换"; "编号重命名"; "删除字符"; "大小写转换"; "扩展名修改"};z=10};
+
+lblOpt1={cls="static";text="参数1:";left=20;top=120;right=120;bottom=140;z=11};
+edtOpt1={cls="edit";text="";left=130;top=115;right=400;bottom=140;edge=1;z=12};
+lblOpt2={cls="static";text="参数2:";left=20;top=150;right=120;bottom=170;z=13};
+edtOpt2={cls="edit";text="";left=130;top=145;right=400;bottom=170;edge=1;z=14};
+
+lblStart={cls="static";text="起始编号:";left=20;top=180;right=120;bottom=200;z=15};
+edtStart={cls="edit";text="1";left=130;top=175;right=200;bottom=200;edge=1;z=16};
+lblDigits={cls="static";text="位数:";left=210;top=180;right=260;bottom=200;z=17};
+edtDigits={cls="edit";text="3";left=270;top=175;right=330;bottom=200;edge=1;z=18};
+lblPreview2={cls="static";text="示例: 001_filename.txt";left=340;top=180;right=800;bottom=200;color=0x999999;z=19};
+
+btnPreview={cls="button";text="预览";left=20;top=220;right=120;bottom=250;z=20};
+btnApply={cls="button";text="应用";left=130;top=220;right=230;bottom=250;z=21};
+btnUndo={cls="button";text="撤销 (从日志)";left=240;top=220;right=360;bottom=250;z=22};
+
+lblPre={cls="static";text="预览 (前 100 个):";left=10;top=295;right=200;bottom=315;z=23};
+list={cls="listbox";text="";left=10;top=320;right=810;bottom=500;edge=1;vscroll=1;z=24};
+
+log={cls="edit";text="";left=10;top=505;right=810;bottom=590;edge=1;hscroll=1;multiline=1;readonly=1;vscroll=1;z=25}
+)
+
+var files = {};
+var undoLog = {};
+
+var logMsg = function(s){
+    main.log.appendLog(s ++ "\r\n");
+    main.log.scrollCaret();
+}
+
+var scanFiles = function(){
+    var dir = string.trim(main.edtSrc.text);
+    if(#dir == 0 || !fsys.isDir(dir)){
+        main.msgbox("请选择有效目录", "提示", 0x40);
+        return;
+    }
+    var mask = main.edtMask.text || "*.*";
+    var recursive = main.chkRecursive.checked;
+    files = {};
+
+    // fsys.enum(dir, mask, 回调, 递归) — 替代不存在的 fsys.dir 扩展库
+    // 回调签名: function(dir, filename, fullpath, findData), filename 为空表示目录条目
+    fsys.enum(dir, mask, function(d, f, full){
+        if(!f) return true;   // 目录条目, 跳过
+        var ext = fsys.getExtensionName(f);
+        var name = string.left(f, #f - #ext);
+        // 简单通配符匹配 (fsys.enum 的 mask 已按通配符过滤, 这里仅对目录内文件再兜底)
+        var pattern = string.replace(string.replace(string.replace(mask, ".", "\\."), "*", ".*"), "?", ".");
+        if(string.regex.test(f, "^" ++ pattern ++ "$", "i")){
+            table.push(files, {full=full; dir=fsys.getParentDir(full); name=name; ext=ext; original=f});
+        }
+        return true;
+    }, recursive);
+    logMsg("扫描到 " ++ #files ++ " 个文件");
+    refreshPreview();
+}
+
+var applyRule = function(file, idx){
+    var ruleIdx = main.cmbRule.selIndex;
+    var opt1 = main.edtOpt1.text;
+    var opt2 = main.edtOpt2.text;
+    var start = tonumber(main.edtStart.text) || 1;
+    var digits = tonumber(main.edtDigits.text) || 3;
+
+    var newName = file.name;
+    var newExt = file.ext;
+
+    if(ruleIdx == 1){  // 前缀
+        newName = opt1 ++ newName;
+    } else if(ruleIdx == 2){  // 后缀
+        newName = newName ++ opt1;
+    } else if(ruleIdx == 3){  // 替换
+        newName = string.replace(newName, opt1, opt2);
+    } else if(ruleIdx == 4){  // 正则替换
+        try{
+            var regex = string.regex("/" ++ opt1 ++ "/");
+            newName = regex.replace(newName, opt2);
+            regex.free();
+        } catch(e){}
+    } else if(ruleIdx == 5){  // 编号
+        var num = start + idx - 1;
+        var numStr = tostring(num);
+        while(#numStr < digits) numStr = "0" ++ numStr;
+        newName = numStr ++ "_" ++ newName;
+    } else if(ruleIdx == 6){  // 删除字符
+        newName = string.replace(newName, opt1, "");
+    } else if(ruleIdx == 7){  // 大小写
+        if(opt1 == "大写") newName = string.upper(newName);
+        else newName = string.lower(newName);
+    } else if(ruleIdx == 8){  // 扩展名
+        if(#opt1 > 0) newExt = "." ++ opt1;
+    }
+
+    return newName ++ newExt;
+}
+
+var refreshPreview = function(){
+    main.list.clear();
+    var changed = 0;
+    for(i=1; #files; 1){
+        var f = files[i];
+        var newName = applyRule(f, i);
+        if(newName != f.original){
+            changed = changed + 1;
+            main.list.add(f.original ++ "  →  " ++ newName);
+        } else {
+            main.list.add(f.original ++ "  (不变)");
+        }
+    }
+    main.lblPre.text = "预览 (前 100 个) - 共 " ++ #files ++ " 个, " ++ changed ++ " 个会改变";
+}
+
+main.btnChoose.oncommand = function(){
+    import fsys.dlg;
+    var dir = fsys.dlg.dir("选择目录", main.edtSrc.text);
+    if(dir) main.edtSrc.text = dir;
+}
+main.btnScan.oncommand = scanFiles;
+
+main.cmbRule.oncommand = refreshPreview;
+main.edtOpt1.onChange = refreshPreview;
+main.edtOpt2.onChange = refreshPreview;
+main.edtStart.onChange = refreshPreview;
+main.edtDigits.onChange = refreshPreview;
+
+main.btnPreview.oncommand = refreshPreview;
+
+main.btnApply.oncommand = function(){
+    if(#files == 0){
+        main.msgbox("请先扫描文件", "提示", 0x40);
+        return;
+    }
+    if(main.msgbox("确认重命名 " ++ #files ++ " 个文件?", "确认", 0x24) != 6) return;
+
+    var renamed = 0;
+    var failed = 0;
+    for(i=1; #files; 1){
+        var f = files[i];
+        var newName = applyRule(f, i);
+        if(newName != f.original){
+            try{
+                var newPath = f.dir ++ "\\" ++ newName;
+                if(fsys.isFile(newPath) || fsys.isDir(newPath)){
+                    logMsg("[失败] 目标已存在: " ++ newPath);
+                    failed = failed + 1;
+                } else {
+                    fsys.rename(f.full, newPath);
+                    // 记录撤销
+                    table.push(undoLog, {from=newPath; to=f.full});
+                    renamed = renamed + 1;
+                }
+            } catch(e){
+                logMsg("[失败] " ++ f.full ++ ": " ++ tostring(e));
+                failed = failed + 1;
+            }
+        }
+    }
+    logMsg("完成! 重命名 " ++ renamed ++ " 个, 失败 " ++ failed ++ " 个");
+    main.msgbox("完成!\n重命名 " ++ renamed ++ " 个\n失败 " ++ failed ++ " 个", "结果", 0x40);
+    scanFiles();
+}
+
+main.btnUndo.oncommand = function(){
+    if(#undoLog == 0){
+        main.msgbox("没有可撤销的操作", "提示", 0x40);
+        return;
+    }
+    if(main.msgbox("撤销 " ++ #undoLog ++ " 个重命名?", "确认", 0x24) != 6) return;
+    var undid = 0;
+    var failed = 0;
+    for(i=1; #undoLog; 1){
+        try{
+            fsys.rename(undoLog[i].from, undoLog[i].to);
+            undid = undid + 1;
+        } catch(e){
+            failed = failed + 1;
+        }
+    }
+    undoLog = {};
+    logMsg("撤销完成! 成功 " ++ undid ++ " 个, 失败 " ++ failed ++ " 个");
+    scanFiles();
+}
+
+main.show();
+win.loopMessage();

@@ -1,0 +1,111 @@
+﻿//===================================================================
+// 工具10: 屏幕/窗口信息查看器
+// 功能: 实时显示鼠标坐标、屏幕分辨率、颜色、窗口句柄、DPI
+//===================================================================
+
+import win.ui;
+import com.picture;
+import gdip;
+import win.util.tray;
+import time;
+
+var main = win.form(text="屏幕信息";right=320;bottom=380;border="thin";mode="popup";exmode="toolwindow")
+main.add(
+lblTitle={cls="static";text="屏幕信息 (右键退出)";left=10;top=10;right=310;bottom=30;align="center";font=LOGFONT(h=-13;weight=700);z=1};
+preview={cls="bkplus";left=10;top=40;right=310;bottom=100;border={color=0x888888;width=1};z=2};
+lblColor={cls="static";text="#000000";left=10;top=110;right=310;bottom=130;align="center";font=LOGFONT(h=-14);z=3};
+lblPos={cls="static";text="鼠标: (0, 0)";left=10;top=140;right=310;bottom=160;color=0x666666;z=4};
+lblScreen={cls="static";text="屏幕: ?x?";left=10;top=165;right=310;bottom=185;color=0x666666;z=5};
+lblWindow={cls="static";text="窗口句柄: 0";left=10;top=190;right=310;bottom=210;color=0x666666;z=6};
+lblWindowTitle={cls="static";text="窗口标题: ?";left=10;top=215;right=310;bottom=235;color=0x666666;z=7};
+lblDpi={cls="static";text="DPI: 100%";left=10;top=240;right=310;bottom=260;color=0x666666;z=8};
+lblInfo={cls="static";text="---";left=10;top=265;right=310;bottom=285;color=0x999999;z=9};
+btnPin={cls="button";text="置顶";left=10;top=295;right=80;bottom=325;z=10};
+btnCopyAll={cls="button";text="复制全部信息";left=90;top=295;right=310;bottom=325;z=11};
+status={cls="static";text="就绪";left=10;top=335;right=310;bottom=360;color=0x999999;z=12}
+)
+
+
+// 取屏幕像素颜色 (win.colorPick 不存在, 全屏截图 + gdip.bitmap.getPixel)
+var pickPixel = function(x, y){
+    var pic = com.picture.snap();
+    var bmp = gdip.bitmap(pic);
+    var clr = bmp.getPixel(x, y);
+    var r = clr & 0xFF;
+    var g = (clr >> 8) & 0xFF;
+    var b = (clr >> 16) & 0xFF;
+    return r, g, b;
+}
+
+var int2hex = function(n){
+    var hex = "";
+    var digits = "0123456789ABCDEF";
+    for(i=1; 2; 1){
+        hex = string.slice(digits, (n % 16) + 1, (n % 16) + 1) ++ hex;
+        n = math.floor(n / 16);
+    }
+    return hex;
+}
+
+var refreshInfo = function(){
+    var x, y = win.getCursorPos();
+    var r, g, b = pickPixel(x, y);
+    main.lblPos.text = "鼠标: (" ++ x ++ ", " ++ y ++ ")";
+    main.lblColor.text = "#" ++ int2hex(r) ++ int2hex(g) ++ int2hex(b) ++ "  RGB(" ++ r ++ "," ++ g ++ "," ++ b ++ ")";
+    main.preview.bgcolor = 0xFF000000 | (r * 0x10000) | (g * 0x100) | b;
+
+    var sw, sh = win.getScreen();
+    main.lblScreen.text = "屏幕: " ++ sw ++ " x " ++ sh;
+
+    var hwnd = win.getForeground();
+    main.lblWindow.text = "窗口句柄: " ++ (hwnd ? tostring(hwnd) : "无");
+    if(hwnd){
+        var title = win.getText(hwnd);
+        if(#title > 30) title = string.left(title, 30) ++ "...";
+        main.lblWindowTitle.text = "窗口标题: " ++ title;
+    }
+
+    // DPI (简化)
+    try{
+        var hdc = ::GetDC(0);
+        var dpi = ::GetDeviceCaps(hdc, 0x58/*LOGPIXELSX*/);
+        ::ReleaseDC(0, hdc);
+        main.lblDpi.text = "DPI: " ++ dpi ++ " (" ++ math.floor(dpi / 96 * 100) ++ "%)";
+    } catch(e){
+        main.lblDpi.text = "DPI: 未知";
+    }
+}
+
+main.setInterval(100, refreshInfo);
+
+var pinned = false;
+main.btnPin.oncommand = function(){
+    pinned = !pinned;
+    main.topmost(pinned);
+    main.btnPin.text = pinned ? "取消置顶" : "置顶";
+};
+
+main.btnCopyAll.oncommand = function(){
+    var info = "鼠标: " ++ main.lblPos.text ++ "\n"
+             ++ "颜色: " ++ main.lblColor.text ++ "\n"
+             ++ main.lblScreen.text ++ "\n"
+             ++ main.lblWindow.text ++ "\n"
+             ++ main.lblWindowTitle.text ++ "\n"
+             ++ main.lblDpi.text;
+    import win.clip;
+    win.clip.write(info);
+    main.status.text = "已复制全部信息";
+};
+
+// 全局热键
+main.reghotkey(function(){
+    if(main.visible){
+        main.hide();
+    } else {
+        main.setPos(20, 100);
+        main.show();
+    }
+}, 0x0002 | 0x0004, 'I'#);
+
+main.show();
+win.loopMessage();

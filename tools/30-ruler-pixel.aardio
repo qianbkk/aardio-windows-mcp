@@ -1,0 +1,134 @@
+﻿//===================================================================
+// 工具30: 屏幕像素尺 + 元素探测器
+// 功能: 屏幕尺子/元素位置大小/颜色采样/窗口信息
+//===================================================================
+
+import win.ui;
+import com.picture;
+import gdip;
+import time;
+import JSON;
+
+var main = win.form(text="屏幕像素尺";right=420;bottom=520;border="thin";mode="popup")
+main.add(
+lblTitle={cls="static";text="📏 屏幕像素尺 + 元素探测";left=10;top=10;right=400;bottom=30;align="center";font=LOGFONT(h=-13;weight=700);z=1};
+preview={cls="bkplus";left=10;top=40;right=400;bottom=170;bgcolor=0xFFFFFF;border={color=0x888888;width=1};z=2};
+lblInfo={cls="static";text="(截图区域)";left=10;top=175;right=400;bottom=195;color=0x666666;align="center";z=3};
+lblColor={cls="static";text="采样: #FFFFFF";left=10;top=200;right=400;bottom=220;color=0x666666;align="center";z=4};
+lblColor2={cls="static";text="RGB(255, 255, 255)";left=10;top=220;right=400;bottom=240;color=0x999999;align="center";z=5};
+
+toolbar={cls="bk";left=0;top=250;right=420;bottom=290;bgcolor=0xF0F0F0;z=6};
+btnStart={cls="button";text="开始测量 (F8)";left=10;top=258;right=130;bottom=282;z=7};
+btnStop={cls="button";text="停止";left=135;top=258;right=255;bottom=282;z=8};
+btnPin={cls="button";text="📌 置顶";left=260;top=258;right=400;bottom=282;z=9};
+
+lblSize={cls="static";text="测量:";left=10;top=300;right=400;bottom=320;color=0x666666;z=10};
+lblSizeVal={cls="static";text="0 × 0";left=10;top=325;right=400;bottom=355;font=LOGFONT(h=-22;weight=700);align="center";color=0x1A73E8;z=11};
+lblDelta={cls="static";text="Δ 0 × 0";left=10;top=360;right=400;bottom=380;color=0x666666;align="center";z=12};
+
+toolbar2={cls="bk";left=0;top=390;right=420;bottom=425;bgcolor=0xF0F0F0;z=13};
+btnCopyColor={cls="button";text="复制颜色";left=10;top=398;right=130;bottom=420;z=14};
+btnCopySize={cls="button";text="复制尺寸";left=135;top=398;right=255;bottom=420;z=15};
+btnSave={cls="button";text="保存截图";left=260;top=398;right=400;bottom=420;z=16};
+
+status={cls="static";text="就绪";left=10;top=430;right=400;bottom=510;color=0x666666;align="center";transparent=1;z=17}
+)
+
+var measuring = false;
+var startX, startY, endX, endY;
+var lastBmp = null;
+
+// 取屏幕像素颜色 (win.colorPick 不存在, 全屏截图 + gdip.bitmap.getPixel)
+var pickPixel = function(x, y){
+    var pic = com.picture.snap();
+    var bmp = gdip.bitmap(pic);
+    var clr = bmp.getPixel(x, y);
+    var r = clr & 0xFF;
+    var g = (clr >> 8) & 0xFF;
+    var b = (clr >> 16) & 0xFF;
+    return r, g, b;
+}
+
+var int2hex = function(n){
+    var hex = "";
+    var digits = "0123456789ABCDEF";
+    for(i=1; 2; 1){
+        hex = string.slice(digits, (n % 16) + 1, (n % 16) + 1) ++ hex;
+        n = math.floor(n / 16);
+    }
+    return hex;
+}
+
+var startMeasure = function(){
+    measuring = true;
+    startX, startY = win.getCursorPos();
+    endX, endY = startX, startY;
+    main.status.text = "测量中... 移动鼠标,按 ESC 结束";
+    // 开始循环更新
+    var tick = function(){
+        if(!measuring) return;
+        endX, endY = win.getCursorPos();
+        var w = math.abs(endX - startX);
+        var h = math.abs(endY - startY);
+        main.lblSizeVal.text = w ++ " × " ++ h;
+        var dW = endX - startX;
+        var dH = endY - startY;
+        main.lblDelta.text = "Δ " ++ dW ++ " × " ++ dH;
+        // 颜色
+        var r, g, b = pickPixel(endX, endY);
+        main.lblColor.text = "采样: #" ++ int2hex(r) ++ int2hex(g) ++ int2hex(b);
+        main.lblColor2.text = "RGB(" ++ r ++ ", " ++ g ++ ", " ++ b ++ ")";
+        main.preview.bgcolor = 0xFF000000 | (r * 0x10000) | (g * 0x100) | b;
+        // 截图区域
+        if(w > 5 && h > 5){
+            try{
+                var sx = math.min(startX, endX);
+                var sy = math.min(startY, endY);
+                if(lastBmp) lastBmp.dispose();
+                lastBmp = gdip.bitmap(sx, sy, w, h);
+                main.preview.setBackground(lastBmp);
+                main.lblInfo.text = "(" ++ sx ++ "," ++ sy ++ ") " ++ w ++ " × " ++ h;
+            } catch(e){}
+        }
+    }
+    main.setInterval(50, tick);
+}
+
+var stopMeasure = function(){
+    measuring = false;
+    main.status.text = "已停止";
+}
+
+main.btnStart.oncommand = startMeasure;
+main.btnStop.oncommand = stopMeasure;
+main.btnPin.oncommand = function(){
+    main.topmost(!main.topmost());
+};
+
+main.btnCopyColor.oncommand = function(){
+    import win.clip;
+    win.clip.write(main.lblColor.text);
+    main.status.text = "已复制颜色";
+};
+main.btnCopySize.oncommand = function(){
+    import win.clip;
+    win.clip.write(main.lblSizeVal.text);
+    main.status.text = "已复制尺寸";
+};
+main.btnSave.oncommand = function(){
+    if(lastBmp){
+        import fsys.dlg;
+        var path = fsys.dlg.save("保存截图", "ruler.png", "PNG 图片|*.png")
+        if(path){
+            lastBmp.save(path);
+            main.status.text = "已保存: " ++ path;
+        }
+    }
+};
+
+main.reghotkey(startMeasure, 0, 0x77/*VK_F8*/);
+main.reghotkey(stopMeasure, 0, 0x1B/*VK_ESC*/);
+
+main.setPos(20, 100);
+main.show();
+win.loopMessage();

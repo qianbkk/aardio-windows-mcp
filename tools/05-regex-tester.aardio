@@ -1,0 +1,153 @@
+//===================================================================
+// 工具05: 正则表达式测试器
+// 功能: 实时测试正则,显示所有匹配和捕获组,支持替换
+//===================================================================
+
+import win.ui;
+import string.regex;   // 标准库正则 (VBScript.RegExp 封装), 替代不存在的 preg 扩展库
+import JSON;
+import win.clip;
+
+/*DSG{{*/
+var winform = win.form(text="正则测试器";right=900;bottom=700;border="thin")
+winform.add(
+edtRegex={cls="edit";text="(\w+)@(\w+)\.(\w+)";left=10;top=10;right=890;bottom=40;edge=1;font=LOGFONT(h=-14);z=1};
+chkGlobal={cls="checkbox";text="全局 g";left=10;top=45;right=80;bottom=65;z=2};
+chkIgnoreCase={cls="checkbox";text="忽略大小写 i";left=90;top=45;right=200;bottom=65;z=3};
+chkMulti={cls="checkbox";text="多行 m";left=210;top=45;right=310;bottom=65;z=4};
+chkDotAll={cls="checkbox";text=".匹配换行 s";left=320;top=45;right=460;bottom=65;z=5};
+chkUnicode={cls="checkbox";text="Unicode u";left=470;top=45;right=590;bottom=65;z=6};
+lblInput={cls="static";text="测试文本 (粘贴/输入):";left=10;top=72;right=200;bottom=92;color=0x666666;transparent=1;z=7};
+edtInput={cls="edit";text="联系邮箱: qianbkk@163.com, qq: 123456@qq.com\n备用: test@gmail.com, 工作: admin@miniMax.cn\n无效: not-an-email";left=10;top=95;right=890;bottom=300;edge=1;hscroll=1;multiline=1;vscroll=1;z=8};
+lblResult={cls="static";text="匹配结果:";left=10;top=305;right=200;bottom=325;color=0x666666;transparent=1;z=9};
+treeMatches={cls="treeview";text="";left=10;top=328;right=890;bottom=450;edge=1;hscroll=1;vscroll=1;z=10};
+lblReplace={cls="static";text="替换 (空=禁用):";left=10;top=455;right=200;bottom=475;color=0x666666;transparent=1;z=11};
+edtReplace={cls="edit";text="[$1]";left=10;top=478;right=890;bottom=508;edge=1;z=12};
+edtReplaced={cls="edit";text="";left=10;top=512;right=890;bottom=680;bgcolor=0xF0F8FF;edge=1;hscroll=1;multiline=1;readonly=1;vscroll=1;z=13};
+status={cls="static";text="就绪";left=10;top=685;right=890;bottom=700;color=0x666666;transparent=1;z=14}
+)
+/*}}*/
+
+var buildFlags = function(){
+    var flags = "";
+    if(winform.chkGlobal.checked) flags = flags ++ "g";
+    if(winform.chkIgnoreCase.checked) flags = flags ++ "i";
+    if(winform.chkMulti.checked) flags = flags ++ "m";
+    if(winform.chkDotAll.checked) flags = flags ++ "s";
+    if(winform.chkUnicode.checked) flags = flags ++ "u";
+    return flags;
+}
+
+var test = function(){
+    winform.treeMatches.clear();
+    var pattern = winform.edtRegex.text;
+    var flags = buildFlags();
+    if(#pattern == 0){
+        winform.status.text = "请输入正则";
+        return;
+    }
+
+    try{
+        var regex;
+        if(#flags > 0){
+            regex = string.regex("/" ++ pattern ++ "/" ++ flags);
+        } else {
+            regex = string.regex(pattern);
+        }
+
+        var input = winform.edtInput.text;
+        var matchCount = 0;
+        var positions = {};
+        var start = 1;
+
+        // 收集所有匹配
+        for(match in regex.gmatch(input)){
+            matchCount = matchCount + 1;
+            // match 是表, [1]=整个匹配, [2..]=捕获组
+            var fullMatch = match[1];
+            // 在 input 中找位置
+            var pos = string.find(input, fullMatch, start);
+            if(pos){
+                start = pos[2] + 1;
+            }
+            var node = winform.treeMatches.insertItem({
+                text = "匹配 " ++ matchCount ++ ": " ++ string.left(fullMatch, 80) ++ (fullMatch && #fullMatch > 80 ? "..." : "")
+            });
+            node.match = match;
+            node.pos = pos;
+
+            // 添加捕获组
+            for(k, v in match){
+                if(tonumber(k)){
+                    if(tonumber(k) == 1){
+                        node.insertItem({text="[整个]  = " ++ tostring(v)});
+                    } else {
+                        node.insertItem({text="[" ++ (tonumber(k) - 1) ++ "]    = " ++ tostring(v)});
+                    }
+                }
+            }
+        }
+
+        winform.status.text = "找到 " ++ matchCount ++ " 个匹配";
+
+        // 替换
+        var replacePattern = winform.edtReplace.text;
+        if(#replacePattern > 0){
+            var replaced = regex.replace(input, replacePattern);
+            winform.edtReplaced.text = replaced;
+        } else {
+            winform.edtReplaced.text = "(未启用替换)";
+        }
+
+        regex.free();
+    } catch(e){
+        winform.status.text = "错误: " ++ tostring(e);
+    }
+}
+
+// 实时测试
+winform.edtRegex.onChange = test;
+winform.edtInput.onChange = test;
+winform.edtReplace.onChange = test;
+winform.chkGlobal.oncommand = test;
+winform.chkIgnoreCase.oncommand = test;
+winform.chkMulti.oncommand = test;
+winform.chkDotAll.oncommand = test;
+winform.chkUnicode.oncommand = test;
+
+// 预设常用正则
+import win.ui.menu;
+winform.popmenu = win.ui.popmenu(winform);
+var presets = {
+    {"邮箱", "(\w+)@(\w+)\.(\w+)"};
+    {"手机号 (中国)", "1[3-9]\d{9}"};
+    {"身份证号", "\d{17}[\dXx]"};
+    {"IPv4", "\d+\.\d+\.\d+\.\d+"};
+    {"URL", "https?://[\w./?=&%-]+"};
+    {"日期 YYYY-MM-DD", "\d{4}-\d{2}-\d{2}"};
+    {"时间 HH:MM:SS", "\d{2}:\d{2}:\d{2}"};
+    {"十六进制颜色", "#[0-9A-Fa-f]{6}"};
+    {"数字", "[+-]?\d+(?:\.\d+)?"};
+    {"中文字符", "[\u4e00-\u9fa5]+"};
+    {"IP地址+端口", "\d+\.\d+\.\d+\.\d+:\d+"};
+    {"Markdown 链接", "\[([^\]]+)\]\(([^)]+)\)"};
+}
+for(i=1; #presets; 1){
+    winform.popmenu.add("预设: " ++ presets[i][1], function(arg){
+        winform.edtRegex.text = arg;
+        test();
+    }, presets[i][2]);
+}
+
+winform.popmenu.add();
+winform.popmenu.add("复制当前正则", function(){
+    win.clip.write(winform.edtRegex.text);
+});
+
+// Ctrl+R 测试
+winform.reghotkey(test, 0x0002, 'R'#);
+
+// 启动测试
+test();
+winform.show();
+win.loopMessage();

@@ -1,0 +1,230 @@
+﻿//===================================================================
+// 工具04: JSON 格式化查看器
+// 功能: 粘贴 JSON 自动格式化,树形展示,语法高亮
+//===================================================================
+
+import win.ui;
+import win.clip;
+import JSON;
+import win.util.tray;
+
+/*DSG{{*/
+var winform = win.form(text="JSON 查看器";right=820;bottom=600;border="thin")
+winform.add(
+edtInput={cls="edit";text='{"name":"空空","tools":["aardio","ComfyUI","LS-DYNA"],"age":25,"alive":true,"detail":{"job":"研究生","school":"南理工"}}';left=10;top=10;right=810;bottom=170;edge=1;hscroll=1;multiline=1;vscroll=1;z=1};
+toolbar={cls="bk";left=10;top=175;right=810;bottom=200;bgcolor=0xF0F0F0;z=2};
+btnFormat={cls="button";text="格式化";left=20;top=178;right=90;bottom=198;z=3};
+btnCompress={cls="button";text="压缩";left=95;top=178;right=165;bottom=198;z=4};
+btnPaste={cls="button";text="从剪贴板";left=170;top=178;right=260;bottom=198;z=5};
+btnCopy={cls="button";text="复制结果";left=265;top=178;right=355;bottom=198;z=6};
+btnClear={cls="button";text="清空";left=360;top=178;right=420;bottom=198;z=7};
+edtPath={cls="edit";text="(右键节点可复制路径)";left=10;top=205;right=810;bottom=225;bgcolor=0xFFFFCC;edge=1;readonly=1;z=8};
+tree={cls="treeview";text="";left=10;top=230;right=810;bottom=560;edge=1;hscroll=1;vscroll=1;z=9};
+status={cls="static";text="就绪";left=10;top=565;right=810;bottom=590;color=0x666666;transparent=1;z=10}
+)
+/*}}*/
+
+var currentJson = null;
+
+var syntaxHighlight = function(s){
+    // 简易语法高亮 (用 ANSI 颜色码嵌入, edit 控件不直接支持,这里只做替换)
+    s = string.replace(s, '"', '"');
+    return s;
+}
+
+var getType = function(v){
+    if(v === null) return "null";
+    if(type(v) == "table"){
+        if(#v == 0) return "object";  // 空或纯 map
+        // 区分 array 和 object
+        var allNumeric = true;
+        for(k, _ in v){
+            if(type(k) != "number"){
+                allNumeric = false;
+                break;
+            }
+        }
+        return allNumeric ? "array" : "object";
+    }
+    if(type(v) == "string") return "string";
+    if(type(v) == "number") return "number";
+    if(type(v) == "boolean") return "boolean";
+    return "unknown";
+}
+
+var getIcon = function(t){
+    if(t == "string") return "🟢";
+    if(t == "number") return "🔵";
+    if(t == "boolean") return "🟣";
+    if(t == "null") return "⚫";
+    if(t == "array") return "📚";
+    if(t == "object") return "📦";
+    return "❓";
+}
+
+var addNode = function(tvi, key, value, path){
+    var t = getType(value);
+    var icon = getIcon(t);
+    var displayValue = "";
+    if(t == "string") displayValue = " = " ++ `"` ++ string.replace(value, "\n", "\\n") ++ `"`;
+    else if(t == "number" || t == "boolean") displayValue = " = " ++ tostring(value);
+    else if(t == "null") displayValue = " = null";
+    else {
+        if(t == "array"){
+            displayValue = " [" ++ #value ++ " 项]";
+        } else {
+            var count = 0;
+            for(k, _ in value) count = count + 1;
+            displayValue = " {" ++ count ++ " 键}";
+        }
+    }
+    var node = winform.tree.insertItem({
+        text = icon ++ "  " ++ tostring(key) ++ displayValue;
+    }, tvi);
+    node.path = path;
+    node.value = value;
+    node.valueType = t;
+
+    if(t == "array" || t == "object"){
+        for(k, v in value){
+            var childPath = path == "" ? tostring(k) : path ++ "." ++ tostring(k);
+            addNode(node, k, v, childPath);
+        }
+    }
+    return node;
+}
+
+var showJson = function(obj){
+    winform.tree.clear();
+    if(obj === null || obj === undefined){
+        winform.status.text = "JSON 为空";
+        return;
+    }
+    var root = winform.tree.insertItem({text="🌳  (根)"});
+    root.path = "";
+    if(type(obj) == "table"){
+        for(k, v in obj){
+            addNode(root, k, v, tostring(k));
+        }
+    } else {
+        winform.tree.insertItem({text=getIcon(getType(obj)) ++ "  (值) = " ++ tostring(obj)}, root);
+    }
+}
+
+var format = function(){
+    try{
+        var input = winform.edtInput.text;
+        if(#input == 0) return;
+        var obj = JSON.parse(input);
+        currentJson = obj;
+        var pretty = JSON.stringify(obj, true);
+        winform.edtInput.text = pretty;
+        showJson(obj);
+        winform.status.text = "解析成功 - 共 " ++ countNodes(obj) ++ " 个节点";
+    } catch(e){
+        winform.status.text = "解析失败: " ++ e;
+        winform.msgbox("JSON 解析失败:\n" ++ e, "错误", 0x10);
+    }
+}
+
+var countNodes = function(v){
+    var c = 1;
+    if(type(v) == "table"){
+        for(k, vv in v){
+            c = c + countNodes(vv);
+        }
+    }
+    return c;
+}
+
+var compress = function(){
+    try{
+        var input = winform.edtInput.text;
+        if(#input == 0) return;
+        var obj = JSON.parse(input);
+        var compact = JSON.stringify(obj);
+        winform.edtInput.text = compact;
+        currentJson = obj;
+        showJson(obj);
+        winform.status.text = "已压缩: " ++ #compact ++ " 字符";
+    } catch(e){
+        winform.status.text = "解析失败: " ++ e;
+    }
+}
+
+var paste = function(){
+    try{
+        var c = win.clip.read();
+        if(c){
+            winform.edtInput.text = c;
+            format();
+        }
+    } catch(e){
+        winform.status.text = "粘贴失败: " ++ e;
+    }
+}
+
+var copyResult = function(){
+    if(winform.edtInput.text){
+        win.clip.write(winform.edtInput.text);
+        winform.status.text = "已复制到剪贴板";
+    }
+}
+
+winform.btnFormat.oncommand = format;
+winform.btnCompress.oncommand = compress;
+winform.btnPaste.oncommand = paste;
+winform.btnCopy.oncommand = copyResult;
+winform.btnClear.oncommand = function(){
+    winform.edtInput.text = "";
+    winform.tree.clear();
+    currentJson = null;
+    winform.status.text = "已清空";
+}
+
+// 选中树节点 → 显示路径
+winform.tree.onSelChanged = function(item){
+    if(item && item.path !== null){
+        var p = item.path == "" ? "(根)" : item.path;
+        winform.edtPath.text = p ++ " : " ++ (item.valueType || "root") ++ " = " ++ tostring(item.value);
+    }
+}
+
+// 右键菜单
+import win.ui.menu;
+winform.popmenu = win.ui.popmenu(winform);
+winform.popmenu.add("复制节点路径", function(){
+    var sel = winform.tree.selItem;
+    if(sel && sel.path){
+        win.clip.write(sel.path);
+    }
+});
+winform.popmenu.add("复制节点值", function(){
+    var sel = winform.tree.selItem;
+    if(sel && sel.value !== null && sel.value !== undefined){
+        win.clip.write(JSON.stringify(sel.value, true));
+    }
+});
+winform.popmenu.add("展开全部", function(){
+    winform.tree.expandAll();
+});
+winform.popmenu.add("折叠全部", function(){
+    winform.tree.collapseAll();
+});
+
+// 全局热键 Ctrl+Shift+J
+winform.reghotkey(function(){
+    if(winform.visible){
+        winform.hide();
+    } else {
+        winform.show();
+        winform.setForeground();
+        paste();
+    }
+}, 0x0002 | 0x0004, 'J'#);
+
+// 启动时尝试粘贴
+format();
+
+winform.show();
+win.loopMessage();

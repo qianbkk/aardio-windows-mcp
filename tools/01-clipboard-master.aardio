@@ -1,0 +1,194 @@
+﻿//===================================================================
+// 工具01: 剪贴板增强 (Clipboard Master)
+// 功能: 监听剪贴板变化,保存最近 200 条历史,可搜索/快速粘贴
+//===================================================================
+
+import win.ui;
+import win.clip;
+import fsys.ini;
+import time;
+import key;
+import win.util.tray;
+
+/*DSG{{*/
+var winform = win.form(text="剪贴板增强 - Clipboard Master";right=520;bottom=480;border="thin")
+winform.add(
+edtSearch={cls="edit";text="";left=10;top=10;right=510;bottom=36;edge=1;z=1};
+list={cls="listbox";text="";left=10;top=40;right=510;bottom=420;edge=1;hscroll=1;vscroll=1;z=2};
+status={cls="static";text="就绪";left=10;top=425;right=510;bottom=450;color=0x666666;transparent=1;z=3}
+)
+/*}}*/
+
+// --- 配置 ---
+var dataDir = io.appData("/aardio-clipboard-master/");
+var historyFile = dataDir ++ "history.dat";
+var history = {};
+var MAX_HISTORY = 200;
+
+// 加载历史
+if(fsys.isFile(historyFile)) {
+    try{
+        var content = string.load(historyFile);
+        if(content) history = eval("return " ++ content);
+    }
+}
+
+// 保存历史
+var saveHistory = function(){
+    if(!fsys.isDir(dataDir)) fsys.createDir(dataDir);
+    string.save(historyFile, JSON.stringify(history, true), false);
+}
+
+// --- 列表更新 ---
+var updateList = function(filter){
+    winform.list.clear();
+    var count = 0;
+    // 倒序遍历 (最新的在上面)
+    for(i=#history; 1; -1){
+        var item = history[i];
+        if(filter && !string.find(string.lower(item), string.lower(filter))){
+            continue;
+        }
+        var display = item;
+        if(#display > 100) display = string.left(display, 100) ++ "...";
+        display = string.replace(display, '\r\n', ' ');
+        display = string.replace(display, '\n', ' ');
+        display = string.replace(display, '\t', ' ');
+        winform.list.add("[" ++ i ++ "] " ++ display);
+        count = count + 1;
+    }
+    winform.status.text = "总计 " ++ #history ++ " 条 - 显示 " ++ count ++ " 条 - 双击粘贴 - Delete 删除";
+}
+
+// --- 剪贴板监听 ---
+var lastText = "";
+var checkClipboard = function(){
+    try{
+        var currentText = win.clip.read();
+        if(currentText && currentText != lastText && #currentText > 0 && #currentText < 100000){
+            lastText = currentText;
+            // 去重
+            var found = -1;
+            for(i=1; #history; 1){
+                if(history[i] == currentText){
+                    found = i;
+                    break;
+                }
+            }
+            if(found > 0) table.remove(history, found);
+            table.push(history, currentText);
+            while(#history > MAX_HISTORY){
+                table.remove(history, 1);
+            }
+            updateList(winform.edtSearch.text);
+        }
+    }
+}
+
+winform.setInterval(500, checkClipboard);
+
+// --- 搜索 ---
+winform.edtSearch.onChange = function(){
+    updateList(winform.edtSearch.text);
+}
+
+// --- 粘贴选中 ---
+var pasteSelected = function(){
+    var idx = winform.list.selIndex;
+    if(!idx) return;
+    var historyIdx = #history - idx + 1;
+    if(historyIdx >= 1 && historyIdx <= #history){
+        var content = history[historyIdx];
+        winform.hide();
+        win.delay(150);
+        win.clip.write(content);
+        key.press("Ctrl+V");
+    }
+}
+
+winform.list.onOk = function(){
+    pasteSelected();
+}
+winform.list.onDoubleClick = function(){
+    pasteSelected();
+}
+
+// --- 删除 ---
+winform.list.onKeyDown = function(vk){
+    if(vk == 0x2E/*_VK_DELETE*/){
+        var idx = winform.list.selIndex;
+        if(idx){
+            var historyIdx = #history - idx + 1;
+            table.remove(history, historyIdx);
+            updateList(winform.edtSearch.text);
+            saveHistory();
+        }
+    }
+}
+
+// --- 右键菜单 ---
+import win.ui.menu;
+winform.popmenu = win.ui.popmenu(winform);
+winform.popmenu.add("粘贴选中", function(){
+    pasteSelected();
+});
+winform.popmenu.add("复制选中", function(){
+    var idx = winform.list.selIndex;
+    if(idx){
+        var historyIdx = #history - idx + 1;
+        if(historyIdx >= 1 && historyIdx <= #history){
+            win.clip.write(history[historyIdx]);
+        }
+    }
+});
+winform.popmenu.add();
+winform.popmenu.add("清空所有历史", function(){
+    if(winform.msgbox("确定清空所有剪贴板历史?", "确认", 0x24/*YES_NO*/) == 6){
+        history = {};
+        updateList();
+        saveHistory();
+    }
+});
+
+// --- 托盘 ---
+var tray = win.util.tray(winform, {
+    tooltip = "剪贴板增强";
+})
+tray.message = function(wParam, lParam){
+    if(lParam == 0x205/*WM_RBUTTONUP*/){
+        win.setForeground(winform.hwnd, true);
+        winform.popmenu.popup();
+        winform.popmenu.close();
+    } else if(lParam == 0x202/*WM_LBUTTONUP*/){
+        if(winform.visible){
+            winform.hide();
+        } else {
+            updateList();
+            winform.show();
+            winform.edtSearch.setFocus();
+        }
+    }
+}
+
+// --- 全局热键: Ctrl+Shift+V 唤起 ---
+winform.reghotkey(function(){
+    if(winform.visible){
+        winform.hide();
+    } else {
+        updateList();
+        winform.show();
+        winform.edtSearch.setFocus();
+    }
+}, 0x0002 | 0x0004/*CTRL+SHIFT*/, 'V'#);
+
+// --- 关闭 → 隐藏到托盘 ---
+winform.onClose = function(hwnd, message, wParam, lParam){
+    saveHistory();
+    winform.hide();
+    return true;
+}
+
+updateList();
+winform.edtSearch.setFocus();
+winform.show();
+win.loopMessage();

@@ -1,0 +1,183 @@
+﻿//===================================================================
+// 工具07: 屏幕取色器
+// 功能: 放大镜取色,显示 RGB/HEX/HSL,历史记录
+//===================================================================
+
+import win.ui;
+import win.clip;
+import mouse;
+import time;
+import JSON;
+import fsys;
+import gdip;
+import com.picture;
+
+var dataFile = io.appData("/aardio-color-picker/history.json");
+var history = {};
+if(fsys.isFile(dataFile)){
+    try{
+        var c = string.load(dataFile);
+        if(c) history = JSON.parse(c);
+    }
+}
+if(!history.list) history = {list={}};
+
+// 取屏幕坐标像素颜色 (win.colorPick 不存在, 用全屏截图 + gdip.bitmap.getPixel)
+var pickPixel = function(x, y){
+    var pic = com.picture.snap();
+    var bmp = gdip.bitmap(pic);
+    var clr = bmp.getPixel(x, y);
+    var r = clr & 0xFF;
+    var g = (clr >> 8) & 0xFF;
+    var b = (clr >> 16) & 0xFF;
+    return r, g, b;
+}
+
+var saveHistory = function(){
+    if(!fsys.isDir(fsys.getParentDir(dataFile))) fsys.createDir(fsys.getParentDir(dataFile));
+    string.save(dataFile, JSON.stringify(history, true), false);
+}
+
+// RGB -> HSL
+var rgb2hsl = function(r, g, b){
+    r = r / 255; g = g / 255; b = b / 255;
+    var max = math.max(r, g, b);
+    var min = math.min(r, g, b);
+    var h, s, l = 0, 0, (max + min) / 2;
+    if(max != min){
+        var d = max - min;
+        s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+        if(max == r) h = (g - b) / d + (g < b ? 6 : 0);
+        else if(max == g) h = (b - r) / d + 2;
+        else h = (r - g) / d + 4;
+        h = h / 6;
+    }
+    return math.floor(h * 360), math.floor(s * 100), math.floor(l * 100);
+}
+
+var int2hex = function(n){
+    var hex = "";
+    var digits = "0123456789ABCDEF";
+    for(i=1; 2; 1){
+        hex = string.slice(digits, (n % 16) + 1, (n % 16) + 1) ++ hex;
+        n = math.floor(n / 16);
+    }
+    return hex;
+}
+
+var rgb2hex = function(r, g, b){
+    return "#" ++ int2hex(r) ++ int2hex(g) ++ int2hex(b);
+}
+
+var main = win.form(text="屏幕取色器";right=300;bottom=420;border="thin")
+main.add(
+preview={cls="bkplus";left=20;top=20;right=280;bottom=120;border={color=0x888888;width=2};z=1};
+lblHex={cls="static";text="#000000";left=20;top=130;right=280;bottom=160;align="center";font=LOGFONT(h=-22;weight=700);z=2};
+lblRGB={cls="static";text="RGB(0, 0, 0)";left=20;top=165;right=280;bottom=185;align="center";color=0x666666;z=3};
+lblHSL={cls="static";text="HSL(0, 0%, 0%)";left=20;top=185;right=280;bottom=205;align="center";color=0x666666;z=4};
+lblPos={cls="static";text="(0, 0)";left=20;top=205;right=280;bottom=225;align="center";color=0x999999;z=5};
+btnPick={cls="button";text="开始取色 (Ctrl+Shift+C)";left=20;top=235;right=280;bottom=265;font=LOGFONT(h=-13);z=6};
+btnCopyHex={cls="button";text="复制 HEX";left=20;top=275;right=95;bottom=300;z=7};
+btnCopyRGB={cls="button";text="复制 RGB";left=100;top=275;right=180;bottom=300;z=8};
+btnCopyHSL={cls="button";text="复制 HSL";left=185;top=275;right=280;bottom=300;z=9};
+historyList={cls="listbox";left=20;top=310;right=280;bottom=410;edge=1;z=10}
+)
+
+var refreshHistory = function(){
+    main.historyList.clear();
+    for(i=1; #history.list; 1){
+        var h = history.list[i];
+        main.historyList.add(h.hex ++ "  RGB(" ++ h.r ++ "," ++ h.g ++ "," ++ h.b ++ ")");
+    }
+}
+
+var addHistory = function(r, g, b){
+    var hex = rgb2hex(r, g, b);
+    // 去重
+    for(i=1; #history.list; 1){
+        if(history.list[i].hex == hex){
+            table.remove(history.list, i);
+            break;
+        }
+    }
+    table.push(history.list, {r=r; g=g; b=b; hex=hex; t=time.now()});
+    if(#history.list > 30) table.remove(history.list, 1);
+    saveHistory();
+    refreshHistory();
+}
+
+var pickColor = function(){
+    main.hide();
+    win.delay(150);
+    var sw, sh = win.getScreen();
+    var overlay = win.form(text="";right=sw;bottom=sh;border="none")
+    overlay.mode = "popup";
+    overlay.exmode = "toolwindow";
+    overlay.bgcolor = 0x000000;
+    overlay.transparent = 50;
+    overlay.show();
+    overlay.redraw();
+
+    var capturing = true;
+    var captureInterval;
+
+    var onTick = function(){
+        var x, y = win.getCursorPos();
+        var r, g, b = pickPixel(x, y);
+        overlay.redraw();
+    }
+    captureInterval = overlay.setInterval(50, onTick);
+
+    overlay.onMouseDown = function(wParam, lParam){
+        capturing = false;
+        var x, y = win.getCursorPos();
+        var r, g, b = pickPixel(x, y);
+        overlay.close();
+        // 显示
+        var hex = rgb2hex(r, g, b);
+        var h, s, l = rgb2hsl(r, g, b);
+        main.preview.bgcolor = 0xFF000000 | (r * 0x10000) | (g * 0x100) | b;
+        main.lblHex.text = hex;
+        main.lblRGB.text = "RGB(" ++ r ++ ", " ++ g ++ ", " ++ b ++ ")";
+        main.lblHSL.text = "HSL(" ++ h ++ ", " ++ s ++ "%, " ++ l ++ "%)";
+        main.lblPos.text = "(" ++ x ++ ", " ++ y ++ ")";
+        addHistory(r, g, b);
+        main.show();
+    }
+
+    overlay.onKeyDown = function(vk){
+        if(vk == 0x1B/*ESC*/){
+            overlay.close();
+            main.show();
+        }
+    }
+}
+
+main.btnPick.oncommand = pickColor;
+main.btnCopyHex.oncommand = function(){
+    win.clip.write(main.lblHex.text);
+};
+main.btnCopyRGB.oncommand = function(){
+    win.clip.write(main.lblRGB.text);
+};
+main.btnCopyHSL.oncommand = function(){
+    win.clip.write(main.lblHSL.text);
+};
+
+main.historyList.onDoubleClick = function(){
+    var idx = main.historyList.selIndex;
+    if(idx && history.list[idx]){
+        var h = history.list[idx];
+        main.preview.bgcolor = 0xFF000000 | (h.r * 0x10000) | (h.g * 0x100) | h.b;
+        main.lblHex.text = h.hex;
+        main.lblRGB.text = "RGB(" ++ h.r ++ ", " ++ h.g ++ ", " ++ h.b ++ ")";
+        var hh, ss, ll = rgb2hsl(h.r, h.g, h.b);
+        main.lblHSL.text = "HSL(" ++ hh ++ ", " ++ ss ++ "%, " ++ ll ++ "%)";
+    }
+};
+
+main.reghotkey(pickColor, 0x0002 | 0x0004, 'C'#);
+
+refreshHistory();
+main.show();
+win.loopMessage();

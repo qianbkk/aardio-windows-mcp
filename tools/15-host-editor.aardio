@@ -1,0 +1,155 @@
+﻿//===================================================================
+// 工具15: Hosts 文件编辑器
+// 功能: 可视化编辑 hosts,预设常用规则,备份
+//===================================================================
+
+import win.ui;
+import fsys;
+import process;
+import win.clip;
+
+var hostsPath = "C:\\Windows\\System32\\drivers\\etc\\hosts";
+var backupDir = io.appData("/aardio-hosts-editor/");
+if(!fsys.isDir(backupDir)) fsys.createDir(backupDir);
+
+var presets = {
+    {name="禁用常见统计/广告", entries={
+        "127.0.0.1 google-analytics.com";
+        "127.0.0.1 www.google-analytics.com";
+        "127.0.0.1 doubleclick.net";
+        "127.0.0.1 www.doubleclick.net";
+        "127.0.0.1 baidu.com";
+        "127.0.0.1 hm.baidu.com";
+        "127.0.0.1 stats.g.doubleclick.net";
+        "127.0.0.1 tpc.googlesyndication.com";
+    }};
+    {name="GitHub 加速", entries={
+        "140.82.114.3 github.com";
+        "185.199.108.133 raw.githubusercontent.com";
+        "185.199.108.133 gist.githubusercontent.com";
+        "185.199.108.133 user-images.githubusercontent.com";
+    }};
+    {name="本地开发常用", entries={
+        "127.0.0.1 localhost";
+        "127.0.0.1 dev.local";
+        "127.0.0.1 api.local";
+        "127.0.0.1 test.local";
+    }};
+    {name="屏蔽更新", entries={
+        "127.0.0.1 update.microsoft.com";
+        "127.0.0.1 windowsupdate.com";
+        "127.0.0.1 download.windowsupdate.com";
+        "127.0.0.1 stats.microsoft.com";
+    }};
+}
+
+var main = win.form(text="Hosts 编辑器";right=800;bottom=600;border="thin")
+main.add(
+toolbar={cls="bk";left=0;top=0;right=800;bottom=35;bgcolor=0xF0F0F0;z=1};
+btnSave={cls="button";text="保存";left=10;top=8;right=80;bottom=30;z=2};
+btnBackup={cls="button";text="备份";left=85;top=8;right=155;bottom=30;z=3};
+btnRestore={cls="button";text="恢复";left=160;top=8;right=230;bottom=30;z=4};
+cmbPresets={cls="combobox";text="";left=240;top=8;right=400;bottom=30;edge=1;z=5};
+btnApplyPreset={cls="button";text="应用预设";left=405;top=8;right=485;bottom=30;z=6};
+btnFlush={cls="button";text="刷新 DNS";left=490;top=8;right=580;bottom=30;z=7};
+btnAdmin={cls="button";text="管理员运行";left=585;top=8;right=680;bottom=30;z=8};
+chkEnabled={cls="checkbox";text="启用 hosts";left=685;top=12;right=795;bottom=30;checked=1;z=9};
+edt={cls="edit";text="";left=10;top=45;right=790;bottom=540;edge=1;hscroll=1;multiline=1;vscroll=1;font=LOGFONT(name="Consolas";h=-13);z=10};
+status={cls="static";text="就绪";left=10;top=550;right=790;bottom=580;color=0x666666;transparent=1;z=11}
+)
+
+for(i=1; #presets; 1){
+    main.cmbPresets.add(presets[i].name);
+}
+
+var loadHosts = function(){
+    if(fsys.isFile(hostsPath)){
+        try{
+            main.edt.text = string.load(hostsPath);
+        } catch(e){
+            main.status.text = "读取失败(可能需要管理员): " ++ tostring(e);
+        }
+    }
+}
+
+var saveHosts = function(){
+    if(!main.chkEnabled.checked){
+        main.msgbox("未启用,跳过保存", "提示", 0x40);
+        return;
+    }
+    try{
+        // 备份
+        if(fsys.isFile(hostsPath)){
+            var backupName = "hosts-" ++ time.now() ++ ".bak";
+            string.save(backupDir ++ backupName, string.load(hostsPath), false);
+        }
+        // 保存
+        var content = main.edt.text;
+        // 写 hosts 需要管理员权限
+        // 这里用 process.execute 调用 cmd
+        var tmp = io.appData("/aardio-hosts-editor/_tmp_hosts");
+        if(!fsys.isDir(fsys.getParentDir(tmp))) fsys.createDir(fsys.getParentDir(tmp));
+        string.save(tmp, content, false);
+
+        process.execute("cmd.exe", "/c copy /Y " ++ `"` ++ tmp ++ `"` ++ " " ++ `"` ++ hostsPath ++ `"`, 0);
+
+        main.status.text = "已尝试保存(若失败请以管理员身份运行)";
+    } catch(e){
+        main.status.text = "保存失败: " ++ tostring(e);
+    }
+}
+
+main.btnSave.oncommand = saveHosts;
+
+main.btnBackup.oncommand = function(){
+    if(fsys.isFile(hostsPath)){
+        var backupName = "hosts-" ++ time.now() ++ ".bak";
+        string.save(backupDir ++ backupName, string.load(hostsPath), false);
+        main.status.text = "已备份到 " ++ backupDir ++ backupName;
+    }
+}
+
+main.btnRestore.oncommand = function(){
+    import fsys.dlg;
+    var path = fsys.dlg.open("选择备份文件", "Hosts 备份|*.bak;*.txt", main.hwnd)
+    if(path){
+        main.edt.text = string.load(path);
+        main.status.text = "已加载: " ++ path;
+    }
+}
+
+main.btnApplyPreset.oncommand = function(){
+    var idx = main.cmbPresets.selIndex;
+    if(!idx) return;
+    var p = presets[idx];
+    var content = main.edt.text;
+    if(#content > 0 && !string.endWith(content, '\n')){
+        content = content ++ '\n';
+    }
+    content = content ++ "\n# === " ++ p.name ++ " ===\n";
+    for(i=1; #p.entries; 1){
+        content = content ++ p.entries[i] ++ "\n";
+    }
+    main.edt.text = content;
+    main.status.text = "已应用预设: " ++ p.name ++ " - 记得点保存";
+}
+
+main.btnFlush.oncommand = function(){
+    process.execute("cmd.exe", "/c ipconfig /flushdns", 0);
+    main.status.text = "DNS 缓存已刷新";
+}
+
+main.btnAdmin.oncommand = function(){
+    var exe = io.getSpecial(0x28/*CSIDL_SYSTEM*/) ++ "..\\aardio.exe";
+    if(!fsys.isFile(exe)){
+        // 用 PowerShell 提权启动 aardio
+        process.execute("powershell.exe", "-Command " ++ `"` ++ "Start-Process aardio.exe -Verb RunAs" ++ `"`, 0);
+    } else {
+        process.execute(exe, null, 0);
+    }
+    main.status.text = "请在新窗口中操作";
+}
+
+loadHosts();
+main.show();
+win.loopMessage();

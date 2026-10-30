@@ -1,0 +1,271 @@
+﻿//===================================================================
+// 工具08: 番茄钟
+// 功能: 25分钟工作 + 5分钟休息,可配置,统计,通知
+//===================================================================
+
+import win.ui;
+import time;
+import JSON;
+import win.util.tray;
+
+var dataFile = io.appData("/aardio-pomodoro/data.json");
+var data = {
+    workMinutes = 25;
+    breakMinutes = 5;
+    longBreakMinutes = 15;
+    cycles = 0;
+    totalCompleted = 0;
+    todayCompleted = 0;
+    todayDate = "";
+    history = {};
+}
+if(fsys.isFile(dataFile)){
+    try{
+        var c = string.load(dataFile);
+        if(c) data = JSON.parse(c);
+    }
+}
+
+var saveData = function(){
+    if(!fsys.isDir(fsys.getParentDir(dataFile))) fsys.createDir(fsys.getParentDir(dataFile));
+    string.save(dataFile, JSON.stringify(data, true), false);
+}
+
+// 检查日期重置
+var today = time(time.now(), "%Y-%m-%d");
+if(data.todayDate != today){
+    data.todayDate = today;
+    data.todayCompleted = 0;
+}
+
+var main = win.form(text="番茄钟";right=320;bottom=420;border="thin")
+main.add(
+lblState={cls="static";text="准备开始";left=20;top=20;right=300;bottom=50;align="center";font=LOGFONT(h=-18;weight=700);color=0xCC3333;z=1};
+lblTime={cls="static";text="25:00";left=20;top=60;right=300;bottom=140;align="center";font=LOGFONT(h=-48;weight=700);color=0x333333;z=2};
+progress={cls="progress";left=20;top=150;right=300;bottom=170;bgcolor=0xEEEEEE;foreColor=0xFFCC3333;z=3};
+btnStart={cls="button";text="开始工作";left=20;top=185;right=300;bottom=215;font=LOGFONT(h=-14);z=4};
+btnReset={cls="button";text="重置";left=20;top=225;right=100;bottom=250;z=5};
+btnSkip={cls="button";text="跳过";left=110;top=225;right=190;bottom=250;z=6};
+btnSettings={cls="button";text="设置";left=200;top=225;right=300;bottom=250;z=7};
+lblStats={cls="static";text="今日: 0 个 | 累计: 0 个";left=20;top=260;right=300;bottom=280;align="center";color=0x666666;z=8};
+lblToday={cls="static";text="今日记录:";left=20;top=290;right=300;bottom=310;color=0x999999;z=9};
+todayList={cls="listbox";text="";left=20;top=310;right=300;bottom=400;edge=1;vscroll=1;z=10}
+)
+
+var STATE_READY = 0;
+var STATE_WORK = 1;
+var STATE_BREAK = 2;
+var STATE_LONG_BREAK = 3;
+var state = STATE_READY;
+var endTime = 0;
+var timer = null;
+var totalSeconds = 25 * 60;
+var remaining = totalSeconds;
+var cycleCount = 0;
+
+var refreshStats = function(){
+    main.lblStats.text = "今日: " ++ data.todayCompleted ++ " 个 | 累计: " ++ data.totalCompleted ++ " 个";
+    main.todayList.clear();
+    for(i=#data.history; math.max(1, #data.history - 10); -1){
+        var h = data.history[i];
+        var t = time(h.t, "%H:%M");
+        var label = t ++ "  " ++ h.type;
+        main.todayList.add(label);
+    }
+}
+
+var updateTime = function(){
+    if(state == STATE_READY){
+        main.lblTime.text = string.format("%02d:%02d", data.workMinutes, 0);
+        main.progress.setProgress(0, 100);
+        return;
+    }
+    var left = endTime - time.now();
+    if(left <= 0){
+        onComplete();
+        return;
+    }
+    remaining = left;
+    var min = math.floor(left / 60000);
+    var sec = math.floor((left % 60000) / 1000);
+    main.lblTime.text = string.format("%02d:%02d", min, sec);
+    var progress = math.floor((totalSeconds * 1000 - left) * 100 / (totalSeconds * 1000));
+    main.progress.setProgress(progress, 100);
+}
+
+var onComplete = function(){
+    if(timer){
+        main.clearInterval(timer);
+        timer = null;
+    }
+    table.push(data.history, {t=time.now(); type=(state == STATE_WORK ? "工作" : "休息")});
+    if(state == STATE_WORK){
+        data.totalCompleted = data.totalCompleted + 1;
+        data.todayCompleted = data.todayCompleted + 1;
+        cycleCount = cycleCount + 1;
+        saveData();
+        notify("番茄钟", "工作完成! 休息一下~");
+        // 每 4 个番茄 → 长休息
+        if(cycleCount % 4 == 0){
+            startLongBreak();
+        } else {
+            startBreak();
+        }
+    } else {
+        notify("番茄钟", "休息结束! 开始工作吧~");
+        startWork();
+    }
+    refreshStats();
+}
+
+var notify = function(title, msg){
+    // 简单弹窗 + 声音
+    main.msgbox(msg, title, 0x40);
+}
+
+var startWork = function(){
+    state = STATE_WORK;
+    totalSeconds = data.workMinutes * 60;
+    endTime = time.now() + totalSeconds * 1000;
+    main.lblState.text = "工作中";
+    main.lblState.color = 0xCC3333;
+    main.btnStart.text = "暂停";
+    main.progress.foreColor = 0xFFCC3333;
+    if(timer) main.clearInterval(timer);
+    timer = main.setInterval(500, updateTime);
+    updateTime();
+}
+
+var startBreak = function(){
+    state = STATE_BREAK;
+    totalSeconds = data.breakMinutes * 60;
+    endTime = time.now() + totalSeconds * 1000;
+    main.lblState.text = "短休息";
+    main.lblState.color = 0x33CC33;
+    main.btnStart.text = "跳过休息";
+    main.progress.foreColor = 0xFF33CC33;
+    if(timer) main.clearInterval(timer);
+    timer = main.setInterval(500, updateTime);
+    updateTime();
+}
+
+var startLongBreak = function(){
+    state = STATE_LONG_BREAK;
+    totalSeconds = data.longBreakMinutes * 60;
+    endTime = time.now() + totalSeconds * 1000;
+    main.lblState.text = "长休息";
+    main.lblState.color = 0x3366CC;
+    main.btnStart.text = "跳过休息";
+    main.progress.foreColor = 0xFF3366CC;
+    if(timer) main.clearInterval(timer);
+    timer = main.setInterval(500, updateTime);
+    updateTime();
+}
+
+var pause = function(){
+    if(timer){
+        main.clearInterval(timer);
+        timer = null;
+        if(state == STATE_WORK){
+            main.btnStart.text = "继续工作";
+        } else {
+            main.btnStart.text = "继续休息";
+        }
+    } else if(state == STATE_READY){
+        startWork();
+    } else {
+        // 继续
+        endTime = time.now() + remaining;
+        timer = main.setInterval(500, updateTime);
+        if(state == STATE_WORK){
+            main.btnStart.text = "暂停";
+        } else {
+            main.btnStart.text = "暂停休息";
+        }
+    }
+}
+
+var reset = function(){
+    if(timer){
+        main.clearInterval(timer);
+        timer = null;
+    }
+    state = STATE_READY;
+    main.lblState.text = "准备开始";
+    main.lblState.color = 0xCC3333;
+    main.lblTime.text = string.format("%02d:%02d", data.workMinutes, 0);
+    main.btnStart.text = "开始工作";
+    main.progress.setProgress(0, 100);
+}
+
+main.btnStart.oncommand = pause;
+main.btnReset.oncommand = reset;
+main.btnSkip.oncommand = function(){
+    if(state != STATE_READY){
+        onComplete();
+    }
+};
+
+main.btnSettings.oncommand = function(){
+    var dlg = win.form(text="设置";right=300;bottom=200;border="thin")
+    dlg.add(
+    lbl1={cls="static";text="工作时长(分钟):";left=20;top=20;right=150;bottom=40;z=1};
+    edtWork={cls="edit";text=tostring(data.workMinutes);left=160;top=15;right=270;bottom=40;edge=1;z=2};
+    lbl2={cls="static";text="短休息(分钟):";left=20;top=55;right=150;bottom=75;z=3};
+    edtBreak={cls="edit";text=tostring(data.breakMinutes);left=160;top=50;right=270;bottom=75;edge=1;z=4};
+    lbl3={cls="static";text="长休息(分钟):";left=20;top=90;right=150;bottom=110;z=5};
+    edtLong={cls="edit";text=tostring(data.longBreakMinutes);left=160;top=85;right=270;bottom=110;edge=1;z=6};
+    btnOK={cls="button";text="保存";left=60;top=140;right=130;bottom=170;z=7};
+    btnCancel={cls="button";text="取消";left=160;top=140;right=230;bottom=170;z=8};
+    )
+    dlg.btnOK.oncommand = function(){
+        data.workMinutes = tonumber(dlg.edtWork.text) || 25;
+        data.breakMinutes = tonumber(dlg.edtBreak.text) || 5;
+        data.longBreakMinutes = tonumber(dlg.edtLong.text) || 15;
+        saveData();
+        if(state == STATE_READY) reset();
+        dlg.close();
+    }
+    dlg.btnCancel.oncommand = function(){ dlg.close(); }
+    dlg.show();
+}
+
+// 托盘 (win.util.tray ctor 签名: (hwnd, icon, tip); icon 传 null 用默认图标)
+import win.util.tray;
+import fsys;
+var tray = win.util.tray(main, null, "番茄钟 - " ++ data.todayCompleted ++ " 个已完成")
+
+tray.message = function(wParam, lParam){
+    if(lParam == 0x205){
+        win.setForeground(main.hwnd, true);
+        main.popmenu = win.ui.popmenu(main);
+        main.popmenu.add("开始工作", function(){ startWork(); });
+        main.popmenu.add("暂停", pause);
+        main.popmenu.add("重置", reset);
+        main.popmenu.add();
+        main.popmenu.add("显示主窗口", function(){
+            main.show();
+            main.setForeground();
+        });
+        main.popmenu.add("退出", function(){
+            saveData();
+            main.close();
+        });
+        main.popmenu.popup();
+        main.popmenu.close();
+    } else if(lParam == 0x202){
+        main.show();
+        main.setForeground();
+    }
+}
+
+main.onClose = function(hwnd, message, wParam, lParam){
+    saveData();
+    main.hide();
+    return true;
+}
+
+refreshStats();
+reset();
+main.show();
+win.loopMessage();

@@ -1,0 +1,193 @@
+﻿//===================================================================
+// 工具28: 窗口置顶 + 透明度 + 增强工具
+// 功能: 任意窗口置顶/调透明度/最小化到托盘
+//===================================================================
+
+import win.ui;
+import process;
+import JSON;
+import win.util.tray;
+import fsys;
+
+var configFile = io.appData("/aardio-window-tool/config.json");
+var config = {
+    pinned = {};
+}
+if(fsys.isFile(configFile)){
+    try{
+        var c = string.load(configFile);
+        if(c) config = JSON.parse(c);
+    }
+}
+if(!config.pinned) config.pinned = {};
+
+var saveConfig = function(){
+    if(!fsys.isDir(fsys.getParentDir(configFile))) fsys.createDir(fsys.getParentDir(configFile));
+    string.save(configFile, JSON.stringify(config, true), false);
+}
+
+var main = win.form(text="窗口工具 - 置顶/透明度";right=400;bottom=480;border="thin")
+main.add(
+lblHint={cls="static";text="拖动指针到目标窗口,按热键操作";left=10;top=10;right=380;bottom=30;color=0x666666;z=1};
+
+btnPin={cls="button";text="📌 置顶 (Ctrl+Alt+T)";left=10;top=40;right=390;bottom=70;font=LOGFONT(h=-13);z=2};
+btnUnpin={cls="button";text="解除置顶";left=10;top=75;right=390;bottom=100;z=3};
+lblTrans={cls="static";text="透明度:";left=10;top=110;right=80;bottom=130;z=4};
+sldTrans={cls="trackbar";left=85;top=110;right=290;bottom=135;z=5};
+lblTransVal={cls="static";text="100%";left=295;top=112;right=380;bottom=130;color=0x006600;z=6};
+btnTransparent={cls="button";text="应用透明度";left=10;top=140;right=190;bottom=165;z=7};
+btnReset={cls="button";text="重置";left=200;top=140;right=390;bottom=165;z=8};
+lblPinnedList={cls="static";text="已置顶窗口:";left=10;top=175;right=380;bottom=195;z=9};
+pinnedList={cls="listbox";text="";left=10;top=200;right=390;bottom=350;edge=1;vscroll=1;z=10};
+btnUnpinSel={cls="button";text="解除选中";left=10;top=355;right=130;bottom=380;z=11};
+btnClearAll={cls="button";text="全部解除";left=140;top=355;right=260;bottom=380;z=12};
+btnRefresh={cls="button";text="刷新";left=270;top=355;right=390;bottom=380;z=13};
+status={cls="static";text="就绪";left=10;top=400;right=390;bottom=420;color=0x666666;transparent=1;z=14}
+)
+
+main.sldTrans.setRange(10, 100);
+main.sldTrans.pos = 100;
+main.sldTrans.onChange = function(pos){
+    main.lblTransVal.text = pos ++ "%";
+}
+
+var pinWindow = function(hwnd){
+    if(!hwnd) return false;
+    win.topmost(hwnd, true);
+    config.pinned[tostring(hwnd)] = {hwnd=hwnd; t=time.now()};
+    saveConfig();
+    refreshPinnedList();
+    return true;
+}
+
+var unpinWindow = function(hwnd){
+    if(!hwnd) return false;
+    win.topmost(hwnd, false);
+    config.pinned[tostring(hwnd)] = null;
+    saveConfig();
+    refreshPinnedList();
+    return true;
+}
+
+var setTransparency = function(hwnd, percent){
+    if(!hwnd) return;
+    var alpha = math.floor(percent * 255 / 100);
+    win.transparent(hwnd, alpha);
+}
+
+var getTargetHwnd = function(){
+    // 获取鼠标位置下的窗口
+    var x, y = win.getCursorPos();
+    var hwnd = win.windowFromPoint(x, y);
+    if(hwnd){
+        // 获取顶级窗口
+        var top = win.getAncestor(hwnd, 2/*GA_ROOT*/);
+        if(top) return top;
+    }
+    return hwnd;
+}
+
+main.btnPin.oncommand = function(){
+    var hwnd = getTargetHwnd();
+    if(hwnd){
+        if(pinWindow(hwnd)){
+            main.status.text = "已置顶: hwnd=" ++ hwnd;
+        }
+    } else {
+        main.status.text = "未找到窗口";
+    }
+}
+
+main.btnUnpin.oncommand = function(){
+    var hwnd = getTargetHwnd();
+    if(hwnd){
+        if(unpinWindow(hwnd)){
+            main.status.text = "已解除: hwnd=" ++ hwnd;
+        }
+    }
+}
+
+main.btnTransparent.oncommand = function(){
+    var hwnd = getTargetHwnd();
+    if(hwnd){
+        setTransparency(hwnd, main.sldTrans.pos);
+        main.status.text = "透明度 " ++ main.sldTrans.pos ++ "%: hwnd=" ++ hwnd;
+    }
+}
+
+main.btnReset.oncommand = function(){
+    var hwnd = getTargetHwnd();
+    if(hwnd){
+        setTransparency(hwnd, 100);
+        main.status.text = "已重置: hwnd=" ++ hwnd;
+    }
+    main.sldTrans.pos = 100;
+    main.lblTransVal.text = "100%";
+}
+
+var refreshPinnedList = function(){
+    main.pinnedList.clear();
+    for(hwnd, info in config.pinned){
+        if(info){
+            try{
+                var title = win.getText(info.hwnd);
+                if(#title > 40) title = string.left(title, 40) ++ "...";
+                main.pinnedList.add("[置顶] " ++ title ++ " (hwnd=" ++ hwnd ++ ")");
+            } catch(e){
+                main.pinnedList.add("[置顶] (无法访问 hwnd=" ++ hwnd ++ ")");
+            }
+        }
+    }
+}
+
+main.btnRefresh.oncommand = refreshPinnedList;
+
+main.btnUnpinSel.oncommand = function(){
+    var idx = main.pinnedList.selIndex;
+    if(!idx) return;
+    // 找到对应的 hwnd
+    var hwnds = {};
+    for(hwnd, info in config.pinned){
+        if(info) table.push(hwnds, hwnd);
+    }
+    if(hwnds[idx]){
+        unpinWindow(tonumber(hwnds[idx]));
+        main.status.text = "已解除";
+    }
+}
+
+main.btnClearAll.oncommand = function(){
+    for(hwnd, info in config.pinned){
+        if(info){
+            try{ win.topmost(tonumber(hwnd), false); } catch(e){}
+        }
+    }
+    config.pinned = {};
+    saveConfig();
+    refreshPinnedList();
+    main.status.text = "已全部解除";
+}
+
+// 全局热键 Ctrl+Alt+T 置顶
+main.reghotkey(function(){
+    var hwnd = getTargetHwnd();
+    if(hwnd){
+        if(config.pinned[tostring(hwnd)]){
+            unpinWindow(hwnd);
+        } else {
+            pinWindow(hwnd);
+        }
+    }
+}, 0x0002 | 0x0001, 'T'#);
+
+// Ctrl+Alt+Shift+T 透明度
+main.reghotkey(function(){
+    var hwnd = getTargetHwnd();
+    if(hwnd){
+        setTransparency(hwnd, main.sldTrans.pos);
+    }
+}, 0x0002 | 0x0001 | 0x0004, 'T'#);
+
+refreshPinnedList();
+main.show();
+win.loopMessage();

@@ -1,0 +1,235 @@
+﻿//===================================================================
+// 工具14: AI 快速面板
+// 功能: 多 AI 模型一键调用,自定义提示词模板,流式输出
+//===================================================================
+
+import win.ui;
+import JSON;
+import fsys.ini;
+import time;
+
+var configFile = io.appData("/aardio-ai-panel/config.json");
+var config = {
+    models = {
+        {name="MiniMax-M3"; url="https://api.minimaxi.com/v1"; key=""; model="MiniMax-M3"};
+        {name="OpenAI GPT-4o"; url="https://api.openai.com/v1"; key=""; model="gpt-4o-mini"};
+        {name="Claude Sonnet"; url="https://api.anthropic.com"; key=""; model="claude-3-5-sonnet-20241022"};
+        {name="Ollama 本地"; url="http://localhost:11434/v1"; key="ollama"; model="llama3.2"};
+    };
+    currentModel = 0;
+    templates = {
+        {name="翻译为英文"; prompt="请将以下内容翻译为英文,保持原意,只输出译文:\n\n"};
+        {name="翻译为中文"; prompt="请将以下内容翻译为中文,只输出译文:\n\n"};
+        {name="总结"; prompt="请总结以下内容的要点(中文):\n\n"};
+        {name="代码解释"; prompt="请详细解释以下代码的功能和实现:\n\n```\n$INPUT\n```\n\n"};
+        {name="代码优化"; prompt="请优化以下代码的性能和可读性:\n\n```\n$INPUT\n```\n\n"};
+        {name="找 Bug"; prompt="请找出以下代码可能存在的 Bug 和问题:\n\n```\n$INPUT\n```\n\n"};
+        {name="写测试"; prompt="请为以下代码编写单元测试:\n\n```\n$INPUT\n```\n\n"};
+        {name="写文档"; prompt="请为以下代码生成详细的 Markdown 文档:\n\n```\n$INPUT\n```\n\n"};
+    }
+}
+
+if(fsys.isFile(configFile)){
+    try{
+        var c = string.load(configFile);
+        if(c) config = JSON.parse(c);
+    }
+}
+
+var saveConfig = function(){
+    if(!fsys.isDir(fsys.getParentDir(configFile))) fsys.createDir(fsys.getParentDir(configFile));
+    string.save(configFile, JSON.stringify(config, true), false);
+}
+
+var main = win.form(text="AI 快速面板";right=800;bottom=600;border="thin")
+main.add(
+toolbar={cls="bk";left=0;top=0;right=800;bottom=35;bgcolor=0xF0F0F0;z=1};
+cmbModel={cls="combobox";text="";left=10;top=8;right=200;bottom=30;edge=1;items={};z=2};
+btnSettings={cls="button";text="设置";left=205;top=8;right=260;bottom=30;z=3};
+lblTemplates={cls="static";text="模板:";left=270;top=12;right=320;bottom=30;color=0x666666;transparent=1;z=4};
+cmbTemplate={cls="combobox";text="";left=325;top=8;right=560;bottom=30;edge=1;z=5};
+btnApply={cls="button";text="应用";left=565;top=8;right=615;bottom=30;z=6};
+btnSend={cls="button";text="发送";left=620;top=8;right=720;bottom=30;z=7};
+btnClear={cls="button";text="清空";left=725;top=8;right=795;bottom=30;z=8};
+edtInput={cls="edit";text="";left=10;top=45;right=790;bottom=200;edge=1;hscroll=1;multiline=1;vscroll=1;z=9};
+edtOutput={cls="edit";text="";left=10;top=210;right=790;bottom=510;bgcolor=0xF8F8F8;edge=1;hscroll=1;multiline=1;readonly=1;vscroll=1;z=10};
+btnCopy={cls="button";text="复制结果";left=10;top=520;right=110;bottom=550;z=11};
+btnSave={cls="button";text="保存到文件";left=115;top=520;right=220;bottom=550;z=12};
+status={cls="static";text="就绪";left=230;top=525;right=790;bottom=550;color=0x666666;transparent=1;z=13}
+)
+
+// 填充模型下拉
+for(i=1; #config.models; 1){
+    main.cmbModel.add(config.models[i].name);
+}
+main.cmbModel.selIndex = (config.currentModel || 0) + 1;
+
+// 填充模板
+for(i=1; #config.templates; 1){
+    main.cmbTemplate.add(config.templates[i].name);
+}
+main.cmbTemplate.selIndex = 1;
+
+var applyTemplate = function(){
+    var idx = main.cmbTemplate.selIndex;
+    if(idx && config.templates[idx]){
+        main.edtInput.text = config.templates[idx].prompt;
+    }
+}
+
+main.cmbTemplate.oncommand = function(){
+    applyTemplate();
+}
+
+main.btnApply.oncommand = applyTemplate;
+
+main.btnSettings.oncommand = function(){
+    // 简化的设置: 编辑 API key
+    var dlg = win.form(text="API 设置";right=500;bottom=400;border="thin")
+    dlg.add(
+    lbl1={cls="static";text="模型名称";left=10;top=10;right=100;bottom=30;z=1};
+    lbl2={cls="static";text="Base URL";left=10;top=40;right=100;bottom=60;z=2};
+    lbl3={cls="static";text="API Key";left=10;top=70;right=100;bottom=90;z=3};
+    lbl4={cls="static";text="模型名";left=10;top=100;right=100;bottom=120;z=4};
+    list={cls="listview";left=10;top=10;right=490;bottom=340;edge=1;fullRow=1;grid=1;z=5};
+    edtKey={cls="edit";text="";left=110;top=70;right=490;bottom=90;edge=1;z=6};
+    edtModel={cls="edit";text="";left=110;top=100;right=490;bottom=120;edge=1;z=7};
+    btnSave={cls="button";text="保存";left=120;top=350;right=200;bottom=380;z=8};
+    btnClose={cls="button";text="关闭";left=210;top=350;right=290;bottom=380;z=9}
+    )
+    dlg.list.insertColumn("名称", 130);
+    dlg.list.insertColumn("URL", 320);
+    for(i=1; #config.models; 1){
+        dlg.list.addItem({config.models[i].name; config.models[i].url});
+    }
+    dlg.list.onSelChanged = function(){
+        var idx = dlg.list.selIndex;
+        if(idx && config.models[idx]){
+            dlg.edtKey.text = config.models[idx].key || "";
+            dlg.edtModel.text = config.models[idx].model || "";
+        }
+    }
+    dlg.btnSave.oncommand = function(){
+        var idx = dlg.list.selIndex;
+        if(idx && config.models[idx]){
+            config.models[idx].key = dlg.edtKey.text;
+            config.models[idx].model = dlg.edtModel.text;
+            saveConfig();
+            main.msgbox("已保存", "提示", 0x40);
+        }
+    }
+    dlg.btnClose.oncommand = function(){ dlg.close(); }
+    dlg.show();
+}
+
+var streamOutput = "";
+
+var send = function(){
+    var mIdx = main.cmbModel.selIndex;
+    if(!mIdx || !config.models[mIdx]){
+        main.msgbox("请选择模型", "提示", 0x40);
+        return;
+    }
+    var m = config.models[mIdx];
+    if(!m.key){
+        main.msgbox("请先在设置中填写 API Key", "提示", 0x40);
+        return;
+    }
+
+    var input = main.edtInput.text;
+    if(#input == 0){
+        main.msgbox("请输入内容", "提示", 0x40);
+        return;
+    }
+
+    main.edtOutput.text = "";
+    streamOutput = "";
+    main.status.text = "调用中...";
+    main.btnSend.disabled = true;
+
+    thread.invoke(
+        function(winform, m, input){
+            import web.rest;
+            try{
+                var ai = web.rest(m.url);
+                ai.token = m.key;
+                var resp, err;
+                var messages = {
+                    {role="user"; content=input}
+                };
+                // 流式调用 (简化)
+                var reqBody = {
+                    model = m.model;
+                    messages = messages;
+                    stream = true;
+                    temperature = 0.7;
+                };
+                var req = ai.chat.completions;
+                req.setHeader("Authorization", "Bearer " ++ m.key);
+                if(m.url == "https://api.anthropic.com"){
+                    // Anthropic 协议
+                    req.setHeader("anthropic-version", "2023-06-01");
+                    reqBody.model = m.model;
+                    reqBody.max_tokens = 4096;
+                }
+                var req2 = ai.post("chat/completions", reqBody);
+                // 流式解析 (SSE)
+                while(true){
+                    var line = req2.readLine();
+                    if(!line) break;
+                    if(string.startWith(line, "data: ")){
+                        var data = string.slice(line, 7);
+                        if(data == "[DONE]") break;
+                        try{
+                            var j = JSON.parse(data);
+                            if(j.choices && j.choices[1] && j.choices[1].delta && j.choices[1].delta.content){
+                                var content = j.choices[1].delta.content;
+                                winform.edtOutput.appendLog(content);
+                                winform.edtOutput.scrollCaret();
+                            }
+                        } catch(ee){}
+                    }
+                }
+                winform.status.text = "完成";
+            } catch(e){
+                winform.edtOutput.appendLog("\n\n[错误] " ++ tostring(e));
+                winform.status.text = "失败";
+            }
+            winform.btnSend.disabled = false;
+        },
+        main, m, input
+    )
+}
+
+main.btnSend.oncommand = send;
+main.btnClear.oncommand = function(){
+    main.edtInput.text = "";
+    main.edtOutput.text = "";
+    main.status.text = "已清空";
+};
+
+main.btnCopy.oncommand = function(){
+    import win.clip;
+    win.clip.write(main.edtOutput.text);
+    main.status.text = "已复制";
+};
+
+main.btnSave.oncommand = function(){
+    import fsys.dlg;
+    var path = fsys.dlg.save("保存到...", "result.txt", "txt")
+    if(path){
+        string.save(path, main.edtOutput.text, false);
+        main.status.text = "已保存到 " ++ path;
+    }
+};
+
+// Ctrl+Enter 发送
+main.edtInput.onOk = function(ctrl){
+    if(!ctrl){
+        send();
+    }
+};
+
+applyTemplate();
+main.show();
+win.loopMessage();

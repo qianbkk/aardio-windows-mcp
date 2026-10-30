@@ -1,0 +1,883 @@
+
+
+
+
+
+
+
+
+//===================================================================
+// 工具00: aardio HTTP RPC Server (核心 - Mavis 通过 PowerShell 调用)
+//
+// 启动方式:
+//   1. aardio IDE: F5 (调试) 或 F7 (发布 EXE)
+//   2. EXE: rpc-server.exe (无需 aardio 环境)
+//   3. 停止: Ctrl+C (IDE) / taskkill (EXE)
+//
+// 调用 (PowerShell):
+//   $r = Invoke-RestMethod "http://127.0.0.1:42179/api/health" -UseBasicParsing
+//   $r = Invoke-RestMethod "http://127.0.0.1:42179/api/clipboard" -UseBasicParsing
+//   Invoke-RestMethod "http://127.0.0.1:42179/api/eval?expr=time.now()" -UseBasicParsing
+//   Invoke-RestMethod "http://127.0.0.1:42179/api/help" -UseBasicParsing
+//
+// 重要: aardio EXE 模式只嵌入 main chunk 顶部 import 的库.
+//       所有 import 必须放在 main chunk 顶部 (函数体内 import 不进 EXE).
+//       已按 D:\APPALL\aardio\lib 实际库文件逐一验证 (2026-08-12):
+//         - fsys.log / wsock.tcp.simpleHttpServer / gdip.bitmap / win.clip.bitmap
+//           / key / win.util.* / inet.http / inet.url / com 均为标准库, 无需扩展库
+//         - registry / keyboard 库不存在, 对应端点已移除 (keyboard 用 key 库替代)
+//===================================================================
+
+// ===== import 全部依赖库 (均为标准库, 已验证存在) =====
+import fsys.log;                 // 文件日志 (GUI 模式无 console, 禁用 console.log)
+import wsock.tcp.simpleHttpServer;
+import JSON;
+import time;
+import process;
+import process.popen;            // exec 端点需要 (process/_.aardio 无 popen, 是独立库文件)
+import io;
+import fsys;
+import win;
+import win.clip;
+import string;
+import com;                      // 内建库 (builtin/com.aardio), COM 互操作
+import com.wmi;                  // WMI 查询 (进程/网卡端点)
+import com.picture;              // 截图
+import gdip.bitmap;
+import gdip.graphics;            // ext-tools 水印 (需嵌入 EXE)
+import gdip.solidBrush;          // ext-tools 水印
+import gdip.family;              // ext-tools 水印
+import gdip.stringFormat;        // ext-tools 水印
+import win.clip.bitmap;
+import key;                      // 键盘模拟 (keyboard 库不存在, key.sendString/key.combine 替代)
+import mouse;                    // 鼠标控制 (computer use: move/click/scroll/drag)
+import inet.http;
+import inet.url;
+import sqlite;                   // SQLite 查询端点 (标准库)
+import string.regex;             // 正则端点 (VBScript.RegExp 封装)
+import crypt.bin;                // base64 编解码端点
+import crypt.aes;                // 密码管理端点 (ext-tools vault)
+import wsock.tcp.client;          // 端口扫描端点 (ext-tools scan; wsock.tcp 是目录无 _.aardio, 必须 import 具体子库)
+
+// ===== 日志 =====
+// fsys.log 是"类"不是命名空间: fsys.log(路径) 创建日志对象, 再调 .print(msg)
+// (fsys.log.print(path,msg) 的静态调用是错的, this 无 mutex 会静默失败)
+var LOG_PATH = io.appData("/aardio-rpc/rpc-server.log");
+var LOGGER = fsys.log(LOG_PATH);
+var rpc_log = function(msg){
+    try{
+        LOGGER.print("[" ++ tostring(time.now()) ++ "] " ++ tostring(msg));
+    } catch(e){}
+};
+
+// ----- RPC 端点表 (全局! 不能 var 局部 — ext-tools.aardio 用 loadcodex 加载后直接写 api[...], 必须能从 global 访问) -----
+api = {};
+
+// worker 线程需要 import 的库 (EXE 模式下 main chunk 顶部 import 已嵌入, 这里挂到线程 global)
+var worker_imports = function(documentRoot, urlRoot){
+    import fsys.log;
+    import JSON;
+    import time;
+    import process;
+    import process.popen;
+    import io;
+    import fsys;
+    import win;
+    import win.clip;
+    import string;
+    import com;
+    import com.wmi;
+    import com.picture;
+    import gdip.bitmap;
+    import win.clip.bitmap;
+    import key;
+    import inet.http;
+    import inet.url;
+    import sqlite;
+    import string.regex;
+    import crypt.bin;
+    // worker 线程全局: md2html (markdown 渲染, 端点闭包引用全局名需线程内定义)
+    md2html = function(md){
+        var html = {};
+        for(line in string.lines(md)){
+            line = string.trim(line);
+            if(#line == 0) continue;
+            if(string.startWith(line, "###")) table.push(html, "<h3>" ++ string.trim(string.slice(line, 5)) ++ "</h3>");
+            elseif(string.startWith(line, "##")) table.push(html, "<h2>" ++ string.trim(string.slice(line, 4)) ++ "</h2>");
+            elseif(string.startWith(line, "#")) table.push(html, "<h1>" ++ string.trim(string.slice(line, 3)) ++ "</h1>");
+            elseif(string.startWith(line, "-")) table.push(html, "<li>" ++ string.trim(string.slice(line, 2)) ++ "</li>");
+            elseif(string.match(line, "^%d+%.")) table.push(html, "<li>" ++ string.trim(string.replace(line, "^%d+%.", "")) ++ "</li>");
+            else table.push(html, "<p>" ++ line ++ "</p>");
+        }
+        return table.concat(html, "\n");
+    }
+    // worker 线程全局: todo 存取函数 (端点闭包引用全局名, 必须在 worker 线程内重新定义)
+    todo_load = function(){
+        var f = io.appData("/aardio-todo/todo.json");
+        var list = {};
+        if(fsys.isFile(f)){
+            try{ var c = string.load(f); if(c) list = JSON.parse(c); } catch(e){}
+        }
+        if(!list.items) list = {items={}; nextId=1};
+        // 坑: JSON.parse 生成的 items 是哈希表, table.push 后 JSON.stringify 会序列化成 {}
+        // 强制转普通数组表 (双变量迭代收集, 兼容数字/字符串 key)
+        var arr = {};
+        for(k, v in list.items) table.push(arr, v);
+        list.items = arr;
+        return list;
+    };
+    todo_save = function(list){
+        var f = io.appData("/aardio-todo/todo.json");
+        if(!fsys.isDir(fsys.getParentDir(f))) fsys.createDir(fsys.getParentDir(f));
+        string.save(f, JSON.stringify(list, true), false);
+    };
+    // ===== 扩展工具模块需要的库 (worker 线程 global, 端点函数体引用) =====
+    import gdip.graphics;          // ext-tools 水印 (顶部已 import 嵌入 EXE, 这里挂 worker global)
+    import gdip.solidBrush;
+    import gdip.family;
+    import gdip.stringFormat;
+    import crypt.aes;
+    import wsock.tcp.client;
+    import mouse;                    // 鼠标端点 (computer use, 需挂 worker global)
+};
+
+var BASE_PORT = 42179;   // 冷门高位端口 (原 8765 太常用, 易被其他工具/智能体占用)
+var PORT = BASE_PORT;
+var HOST = "127.0.0.1";
+// 进程启动基准时刻, 供 /api/system-info 的 uptime 计算 (单位: 毫秒).
+// ★ 2026-10-07 修复: 原写法 time.now() 返回 time 对象(table), aardio 不支持 time 对象相减,
+//   导致 /api/system-info 抛 "Attempt to perform arithmetic on table". 改用毫秒单调计数 time.tick().
+var RPC_LOG_TS = time.tick();
+
+// ===== 单实例保护 (2026-10-07 新增) =====
+// 背景: 端口被占时本服务会自动 +1 偏移, 并把实际端口写进 port.txt。
+//       若在"已有实例"的情况下再启动一次, 会偏移出一个 42180 的第二实例并改写 port.txt,
+//       导致 MCP bridge / 各客户端指到错误的端口。开机自启场景下这个风险是现实存在的。
+// 做法: 先用 inet.http 探测 BASE_PORT, 若应答内容是本服务的标识则直接退出。
+//       探测失败(端口无监听 / 监听者不是本服务)一律按"无实例"处理, 绝不阻断正常启动。
+// ★ 注意: 判定结果必须用变量带出 try 块 —— aardio 的 try 体是独立闭包,
+//   在 try{ } 内写 return 只会结束该闭包, **不会从外层 chunk 返回** (2026-10-07 实测踩坑)。
+var alreadyRunning = false;
+try{
+    var probe = inet.http();
+    probe.timeout = 2000;   // 毫秒; 探测失败会抛异常走 catch
+    var body = probe.get("http://" ++ HOST ++ ":" ++ BASE_PORT ++ "/");
+    if(body && string.find(body, "aardio RPC Server")) alreadyRunning = true;
+}catch(e){
+    // 端口无人监听 -> 正常情况, 继续启动
+}
+if(alreadyRunning){
+    rpc_log("单实例保护: " ++ HOST ++ ":" ++ BASE_PORT ++ " 已有本服务在运行, 本次启动直接退出");
+    return;
+}
+
+// ===== 挂载扩展工具模块 (模块二: 图片/二维码/RSS/密码/扫描/重命名/翻译) =====
+// 注意: 必须在主线程挂载 (worker 线程的 rpc_api 是线程创建后才注入, onThreadCreated 里拿不到)
+//       ext-tools.aardio 顶层直接注册到全局 api 表 (api 必须是无 var 的全局变量)
+//       端点函数体内的库名 (gdip/crypt/wsock/inet) 在 worker 线程调用时从 worker global 解析
+rpc_log("[ext-tools] 挂载扩展模块...");
+try{
+    var findExtPath = function(){
+        var candidates = {
+            io.fullpath(io.joinpath(io._exedir, "..\ext-tools.aardio"));
+            io.fullpath(io.joinpath(io._exedir, "ext-tools.aardio"));
+            io.fullpath("ext-tools.aardio");
+            io.fullpath("/ext-tools.aardio");
+            io.fullpath(io.joinpath(io._exedir, "..\..\projects\00-rpc-server\ext-tools.aardio"));
+        };
+        for(i=1;#candidates;1){
+            if(fsys.isFile(candidates[i])) return candidates[i];
+        }
+        return null;
+    };
+    var extPath = findExtPath();
+    if(extPath && fsys.isFile(extPath)){
+        var extChunk = loadcodex(extPath);
+        if(extChunk){
+            extChunk();
+            rpc_log("[ext-tools] 挂载成功: " ++ extPath);
+        }
+    } else {
+        rpc_log("[ext-tools] 未找到 ext-tools.aardio 模块文件");
+    }
+} catch(e){
+    rpc_log("[ext-tools] 挂载失败: " ++ tostring(e));
+}
+
+// 健康检查
+api["/api/health"] = function(response, request){
+    response.write(JSON.stringify({ok=true, status="running", time=time.now(), port=rpc_port}, true));
+};
+
+// 系统信息
+api["/api/system-info"] = function(response, request){
+    try{
+        var sys = {
+            os = {version=_VERSION; arch=_WIN_64?"x64":"x86"};
+            user = {name=_USER; home=_HOME; temp=_TEMP};
+            cwd = fsys.getCurDir();
+            tempDir = fsys.getTempDir();
+            uptimeMs = time.tick() - rpc_log_ts;   // 服务进程已运行毫秒数 (2026-10-07 修复)
+        };
+        response.write(JSON.stringify({ok=true; sys=sys}, true));
+    } catch(e){
+        response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+    }
+};
+
+// 读剪贴板
+api["/api/clipboard"] = function(response, request){
+    var content = win.clip.read();
+    response.write(JSON.stringify({ok=true; length=content ? #content : 0; content=content||""}, true));
+};
+
+// 写剪贴板
+api["/api/clipboard/set"] = function(response, request){
+    var text = request.get.text || "";
+    win.clip.write(text);
+    response.write(JSON.stringify({ok=true; length=#text; message="已设置"}, true));
+};
+
+// 当前窗口
+api["/api/window-info"] = function(response, request){
+    var hwnd = win.getForeground();
+    var info = {ok=true; hwnd=hwnd; title=""; rect=null; pid=null; processName=""};
+    if(hwnd){
+        try{
+            info.title = win.getText(hwnd);
+            info.rect = {win.getRect(hwnd)};
+            info.pid = win.getThreadProcessId(hwnd);
+            var p = process.find(info.pid);
+            if(p) info.processName = p.name;
+        } catch(e){}
+    }
+    response.write(JSON.stringify(info, true));
+};
+
+// 顶层窗口列表
+api["/api/window-list"] = function(response, request){
+    var windows = {};
+    win.enum(function(hwnd){
+        if(!win.isVisible(hwnd)) return true;   // 继续枚举, 不要 return null (会停止枚举)
+        var title = win.getText(hwnd);
+        if(!title) return true;
+        var pid = win.getThreadProcessId(hwnd);
+        var pname = "";
+        try{ var p = process.find(pid); if(p) pname = p.name; } catch(e){}
+        table.push(windows, {hwnd=hwnd; title=title; pid=pid; process=pname});
+        return true;
+    });
+    response.write(JSON.stringify({ok=true; count=#windows; items=windows}, true));
+};
+
+// 截图
+api["/api/screenshot"] = function(response, request){
+    // getTempDir() 末尾无 "\", 必须手动补
+    var savePath = request.get.path || (fsys.getTempDir() ++ "\\aardio-screenshot-" ++ time.tick() ++ ".png");
+    var dir = fsys.getParentDir(savePath);
+    if(!fsys.isDir(dir)) fsys.createDir(dir);
+
+    var mode = request.get.mode || "full";
+    // 默认不写剪贴板: worker 线程写位图剪贴板不稳定 (曾导致响应重入/双 JSON), 需要时显式 &clip=1
+    var toClip = (request.get.clip || "0") == "1";
+    try{
+        var bmp;
+        if(mode == "window"){
+            var hwnd = win.getForeground();
+            var pic = com.picture.snap(hwnd);
+            if(pic) bmp = gdip.bitmap(pic);
+        } else {
+            // 全屏: 无参数 snap() 即抓整个屏幕 (官方示例用法)
+            var pic = com.picture.snap();
+            if(pic) bmp = gdip.bitmap(pic);
+        }
+        if(bmp){
+            bmp.save(savePath);
+            if(toClip){
+                try{ win.clip.bitmap.write(bmp); } catch(e){}
+            }
+            var w, h = bmp.width, bmp.height;
+            response.write(JSON.stringify({ok=true; path=savePath; width=w; height=h; mode=mode}, true));
+        } else {
+            // ★ 原写法是在 try 内 return 后落到这里, 但 try 内 return 无效 -> 会写出第二段 JSON
+            //   (表现为 "响应重入/双 JSON")。改为 if/else 单出口, 2026-10-07 修复。
+            response.write(JSON.stringify({ok=false; error="截图失败"}, true));
+        }
+    } catch(e){
+        response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+    }
+};
+
+// 文件搜索 (默认单层; recurse=1 时递归, 对应工具11 的 Everything 风格)
+api["/api/find-files"] = function(response, request){
+    var path = request.get.path || "C:\\";
+    var pattern = request.get.pattern || "*.*";
+    var max = tonumber(request.get.max) || 100;
+    var recurse = request.get.recurse == "1" || request.get.recurse == "true";
+    var results = {};
+    var count = 0;
+    try{
+        if(recurse){
+            // 递归: fsys.enum(dir, mask, 回调, true), 回调签名 (dir, filename, fullpath, data), filename 为空=目录条目
+            fsys.enum(path, pattern, function(dir, filename, fullpath){
+                if(!filename) return;
+                var size = 0;
+                try{ size = io.getSize(fullpath) } catch(e){}
+                table.push(results, {type="file"; name=filename; path=fullpath; size=size});
+                count = count + 1;
+                if(count >= max) return false;
+            }, true);
+        } else {
+            // 非递归: fsys.list 第 3 参 fileMask 是 Windows 原生通配符 (FindFirstFile 处理)
+            // 不能用 string.find 过滤: pattern 的 "." 会被当任意字符通配符, 且不支持 "*" glob
+            // 注意: fsys.list 返回的是数组+哈希双结构 (files[filename]=fullpath), 必须用索引循环只取数组部分,
+            //       否则 for(i,name in files) 会把哈希部分也遍历出来导致 name=完整路径+path 双重拼接
+            var files, folders = fsys.list(path, null, pattern);
+            for(i=1; #files; 1){
+                var name = files[i];
+                if(count >= max) break;
+                var full = path ++ "\\" ++ name;
+                var size = 0;
+                try{ size = io.getSize(full) } catch(e){}
+                table.push(results, {type="file"; name=name; path=full; size=size});
+                count = count + 1;
+            }
+            for(i=1; #folders; 1){
+                var name = folders[i];
+                if(count >= max) break;
+                table.push(results, {type="dir"; name=name; path=path ++ "\\" ++ name});
+                count = count + 1;
+            }
+        }
+        response.write(JSON.stringify({ok=true; path=path; pattern=pattern; recurse=recurse; count=count; items=results}, true));
+    } catch(e){
+        response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+    }
+};
+
+// 进程列表 (WMI, 用 com.wmi 封装库)
+api["/api/processes"] = function(response, request){
+    var max = tonumber(request.get.max) || 50;
+    var sortBy = request.get.sort || "memory";
+    var processes = {};
+    try{
+        for(_, item in com.wmi.each("SELECT ProcessId, Name, WorkingSetSize, ExecutablePath FROM Win32_Process")){
+            try{
+                table.push(processes, {
+                    pid = tonumber(item.ProcessId) || 0;
+                    name = item.Name || "";
+                    memory = tonumber(item.WorkingSetSize) || 0;
+                    path = item.ExecutablePath || "";
+                });
+            } catch(e){}
+        }
+        if(sortBy == "memory"){
+            table.sort(processes, function(next){ return owner.memory > next.memory });
+        } else if(sortBy == "name"){
+            table.sort(processes, function(next){ return owner.name < next.name });
+        } else if(sortBy == "pid"){
+            table.sort(processes, function(next){ return owner.pid < next.pid });
+        }
+        if(#processes > max){
+            var trimmed = {};
+            for(i=1; max; 1) table.push(trimmed, processes[i]);
+            processes = trimmed;
+        }
+        response.write(JSON.stringify({ok=true; count=#processes; items=processes}, true));
+    } catch(e){
+        response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+    }
+};
+
+// 同步执行命令并读取输出
+api["/api/exec"] = function(response, request){
+    var cmd = request.get.cmd || request.get.command;
+    if(!cmd){ response.write(JSON.stringify({ok=false; error="缺少 cmd"}, true)); return; }
+    try{
+        var p = process.popen(cmd);
+        var output = p.readAll();
+        p.wait();
+        response.write(JSON.stringify({ok=true; cmd=cmd; output=output}, true));
+    } catch(e){
+        response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+    }
+};
+
+// 后台执行 (立即返回)
+api["/api/exec-bg"] = function(response, request){
+    var cmd = request.get.cmd;
+    if(!cmd){ response.write(JSON.stringify({ok=false; error="缺少 cmd"}, true)); return; }
+    try{
+        // process.execute 参数1 是程序路径, 参数2 是启动参数 (执行命令需经 cmd.exe /c)
+        var pid = process.execute("cmd.exe", "/c " ++ cmd);
+        response.write(JSON.stringify({ok=true; cmd=cmd; pid=pid}, true));
+    } catch(e){
+        response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+    }
+};
+
+// 启动应用
+api["/api/launch"] = function(response, request){
+    var path = request.get.path;
+    if(!path){ response.write(JSON.stringify({ok=false; error="缺少 path"}, true)); return; }
+    // 校验文件存在 (否则 process.execute 返回 ok 但什么都没启动, 误导调用方)
+    if(!fsys.isFile(path)){
+        response.write(JSON.stringify({ok=false; error="文件不存在: " ++ path}, true)); return;
+    }
+    try{
+        var pid = process.execute(path);
+        response.write(JSON.stringify({ok=true; pid=pid; path=path}, true));
+    } catch(e){
+        response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+    }
+};
+
+// 键盘: 键入文本 / 组合键 (keyboard 库不存在, 用 key 库替代)
+api["/api/keyboard"] = function(response, request){
+    var keys = request.get.keys;
+    var text = request.get.text;
+    try{
+        if(!text && !keys){
+            // ★ 这里原来是 `return;` 放在 try 内 —— try 内 return 无效, 会继续把下面的
+            //   ok=true 也写出去 (双 JSON 且 ok 值自相矛盾)。改为单出口 if/else, 2026-10-07 修复。
+            response.write(JSON.stringify({ok=false; error="需要 keys 或 text"}, true));
+        } else {
+            if(text){
+                key.sendString(text);
+            } else {
+                // keys 形如 "Ctrl+C" 或 "WIN+M", 拆开传给 key.combine
+                // 注意: URL 里 + 会被解码成空格, 兼容两种情况 (以 + 或空格分隔)
+                var parts = string.split(keys, "+");
+                if(#parts == 1) parts = string.split(keys, " ");
+                var k = {};
+                for(i, p in parts){ p = string.trim(p); if(#p > 0) table.push(k, p); }
+                key.combine(table.unpack(k));
+            }
+            response.write(JSON.stringify({ok=true; keys=keys; text=text}, true));
+        }
+    } catch(e){
+        response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+    }
+};
+
+// ===== 鼠标控制 (computer use 基础, aardio mouse 库) =====
+// 注意: mouse 库 abs=false 时用当前光标位置+偏移, 无参调用 = 在当前位置操作
+
+// 当前鼠标位置: /api/mouse/pos
+api["/api/mouse/pos"] = function(response, request){
+    try{
+        var x, y = mouse.getPos();
+        response.write(JSON.stringify({ok=true; x=x; y=y}, true));
+    } catch(e){
+        response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+    }
+};
+
+// 移动鼠标: /api/mouse/move?x=&y=  (绝对像素坐标, 左上角为 0,0)
+api["/api/mouse/move"] = function(response, request){
+    var x = tonumber(request.get.x);
+    var y = tonumber(request.get.y);
+    if(x === null || y === null){ response.write(JSON.stringify({ok=false; error="需要 x 和 y (绝对坐标)"}, true)); return; }
+    try{
+        mouse.setPos(x, y);
+        response.write(JSON.stringify({ok=true; x=x; y=y}, true));
+    } catch(e){
+        response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+    }
+};
+
+// 点击: /api/mouse/click?x=&y=&button=left|right|middle&count=1|2  (x/y 可选, 缺省在当前位置)
+api["/api/mouse/click"] = function(response, request){
+    var x = request.get.x ? tonumber(request.get.x) : null;
+    var y = request.get.y ? tonumber(request.get.y) : null;
+    var button = request.get.button || "left";
+    var count = tonumber(request.get.count) || 1;
+    try{
+        if(x !== null && y !== null) mouse.setPos(x, y);
+        if(button == "right"){
+            ::User32.mouse_event(0x8, 0, 0, 0, 0);     // RIGHTDOWN (当前位置)
+            ::User32.mouse_event(0x10, 0, 0, 0, 0);    // RIGHTUP
+        } elseif(button == "middle"){
+            ::User32.mouse_event(0x20, 0, 0, 0, 0);    // MIDDLEDOWN
+            ::User32.mouse_event(0x40, 0, 0, 0, 0);    // MIDDLEUP
+        } elseif(count > 1){
+            mouse.clickDb();                    // 双击 (当前位置)
+        } else {
+            mouse.click();                      // 单击 (当前位置)
+        }
+        response.write(JSON.stringify({ok=true; x=x; y=y; button=button; count=count}, true));
+    } catch(e){
+        response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+    }
+};
+
+// 滚轮: /api/mouse/scroll?dy=120  (正=上滚, 负=下滚, 一格≈120)
+api["/api/mouse/scroll"] = function(response, request){
+    var dy = tonumber(request.get.dy) || 0;
+    if(dy == 0){ response.write(JSON.stringify({ok=false; error="需要 dy (非 0, 一格≈120)"}, true)); return; }
+    try{
+        ::User32.mouse_event(0x800, 0, 0, dy, 0);   // MOUSEEVENTF_WHEEL (当前位置)
+        response.write(JSON.stringify({ok=true; dy=dy}, true));
+    } catch(e){
+        response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+    }
+};
+
+// 拖拽: /api/mouse/drag?x1=&y1=&x2=&y2=  (从起点按住拖到终点, 左键)
+api["/api/mouse/drag"] = function(response, request){
+    var x1 = tonumber(request.get.x1);
+    var y1 = tonumber(request.get.y1);
+    var x2 = tonumber(request.get.x2);
+    var y2 = tonumber(request.get.y2);
+    if(x1 === null || y1 === null || x2 === null || y2 === null){
+        response.write(JSON.stringify({ok=false; error="需要 x1,y1,x2,y2"}, true)); return;
+    }
+    try{
+        mouse.setPos(x1, y1);
+        mouse.drag(x2, y2, true);   // 内部: down(当前位置) → moveTo(终点) → up
+        response.write(JSON.stringify({ok=true; from={x=x1; y=y1}; to={x=x2; y=y2}}, true));
+    } catch(e){
+        response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+    }
+};
+
+// HTTP 代理 (GET/POST)
+api["/api/http"] = function(response, request){
+    var url = request.get.url;
+    var method = string.upper(request.get.method || "GET");
+    if(!url){ response.write(JSON.stringify({ok=false; error="缺少 url"}, true)); return; }
+    try{
+        var http = inet.http();
+        var body;
+        if(method == "GET"){
+            body = http.get(url);
+        } else {
+            body = http.request(url, null, null, null, null, method);
+        }
+        response.write(JSON.stringify({
+            ok=true; url=url; method=method; status=http.statusCode;
+            headers=http.responseHeaders; body=body;
+        }, true));
+    } catch(e){
+        response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+    }
+};
+
+// 网卡信息 (WMI)
+api["/api/net-info"] = function(response, request){
+    var addrs = {};
+    try{
+        for(_, item in com.wmi.each("SELECT Description, MACAddress, IPAddress FROM Win32_NetworkAdapterConfiguration WHERE IPEnabled = True")){
+            try{
+                if(item.IPAddress){
+                    table.push(addrs, {
+                        description = item.Description;
+                        mac = item.MACAddress;
+                        ip = item.IPAddress;
+                    });
+                }
+            } catch(e){}
+        }
+        response.write(JSON.stringify({ok=true; count=#addrs; adapters=addrs}, true));
+    } catch(e){
+        response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+    }
+};
+
+// eval 表达式 (request.get 已自动 URL 解码, 不要二次 decode)
+api["/api/eval"] = function(response, request){
+    var expr = request.get.expr;
+    if(!expr){ response.write(JSON.stringify({ok=false; error="缺少 expr"}, true)); return; }
+    try{
+        var result = eval(expr);
+        response.write(JSON.stringify({ok=true; expr=expr; result=result; type=type(result)}, true));
+    } catch(e){
+        response.write(JSON.stringify({ok=false; error=tostring(e); expr=expr}, true));
+    }
+};
+
+// ===== 工具能力 RPC 化端点 (2026-08-12 新增) =====
+
+// 屏幕信息 (分辨率/工作区)
+api["/api/screen/info"] = function(response, request){
+    try{
+        var sw, sh = win.getScreen();
+        // getWorkArea 返回 RECT 表 {left,top,right,bottom} (不是多值)
+        var wa = win.getWorkArea();
+        var scr = {width=sw; height=sh; workArea=wa};
+        response.write(JSON.stringify({ok=true; screen=scr}, true));
+    } catch(e){
+        response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+    }
+};
+
+// 屏幕取色 (对应工具07/10/18/30 的取色能力)
+api["/api/screen/pixel"] = function(response, request){
+    var x = tonumber(request.get.x);
+    var y = tonumber(request.get.y);
+    if(x === null || y === null){ response.write(JSON.stringify({ok=false; error="需要 x 和 y"}, true)); return; }
+    try{
+        var pic = com.picture.snap();
+        var bmp = gdip.bitmap(pic);
+        var clr = bmp.getPixel(x, y);
+        var r = clr & 0xFF;
+        var g = (clr >> 8) & 0xFF;
+        var b = (clr >> 16) & 0xFF;
+        var hex = string.format("#%02X%02X%02X", r, g, b);
+        response.write(JSON.stringify({ok=true; x=x; y=y; r=r; g=g; b=b; hex=hex}, true));
+    } catch(e){
+        response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+    }
+};
+
+// 结束进程 (对应工具12 的杀进程能力)
+api["/api/processes/kill"] = function(response, request){
+    var pid = tonumber(request.get.pid);
+    if(!pid){ response.write(JSON.stringify({ok=false; error="缺少 pid"}, true)); return; }
+    try{
+        var prcs = process.find(pid);
+        if(prcs){
+            prcs.kill();
+            response.write(JSON.stringify({ok=true; pid=pid; killed=true}, true));
+        } else {
+            response.write(JSON.stringify({ok=false; error="进程不存在", pid=pid}, true));
+        }
+    } catch(e){
+        response.write(JSON.stringify({ok=false; error=tostring(e); pid=pid}, true));
+    }
+};
+
+// SQLite 查询 (对应工具26)
+api["/api/sqlite/query"] = function(response, request){
+    var path = request.get.path;
+    var sql = request.get.sql;
+    if(!path || !sql){ response.write(JSON.stringify({ok=false; error="需要 path 和 sql"}, true)); return; }
+    try{
+        var db = sqlite(path);
+        // getTable 返回带列名的行表数组 (each 的 row 是数组, 单列查询会丢列名)
+        var rows = db.getTable(sql) || {};
+        var count = #rows;
+        if(count > 500){
+            var trimmed = {};
+            for(i=1; 500; 1) table.push(trimmed, rows[i]);
+            rows = trimmed;
+        }
+        response.write(JSON.stringify({ok=true; path=path; sql=sql; count=count; rows=rows}, true));
+    } catch(e){
+        response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+    }
+};
+
+// 窗口置顶 (对应工具28)
+api["/api/window/topmost"] = function(response, request){
+    var hwndStr = request.get.hwnd;
+    if(!hwndStr){ response.write(JSON.stringify({ok=false; error="缺少 hwnd"}, true)); return; }
+    var hwnd = tonumber(hwndStr);
+    if(hwnd === null){ response.write(JSON.stringify({ok=false; error="hwnd 无效"}, true)); return; }
+    var on = request.get.on ? (request.get.on != "0" && request.get.on != "false") : true;
+    try{
+        win.setTopmost(hwnd, on);
+        response.write(JSON.stringify({ok=true; hwnd=hwnd; topmost=on}, true));
+    } catch(e){
+        response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+    }
+};
+
+// 读 hosts 文件 (对应工具15, 只读; 写需要管理员权限暂不提供)
+api["/api/hosts/read"] = function(response, request){
+    var hostsPath = "C:\\Windows\\System32\\drivers\\etc\\hosts";
+    try{
+        var content = string.load(hostsPath);
+        response.write(JSON.stringify({ok=true; path=hostsPath; content=content||""}, true));
+    } catch(e){
+        response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+    }
+};
+
+// 系统监控: CPU/内存/磁盘 (对应工具12 的监控能力)
+api["/api/system/stats"] = function(response, request){
+    try{
+        var stats = {};
+        // CPU 使用率
+        for(_, item in com.wmi.each("SELECT Name, LoadPercentage FROM Win32_Processor")){
+            stats.cpu = tonumber(item.LoadPercentage) || 0;
+            break;
+        }
+        // 内存
+        for(_, item in com.wmi.each("SELECT TotalVisibleMemorySize, FreePhysicalMemory FROM Win32_OperatingSystem")){
+            var total = tonumber(item.TotalVisibleMemorySize) || 1;
+            var free = tonumber(item.FreePhysicalMemory) || 0;
+            stats.memoryTotalMB = math.floor(total / 1024);
+            stats.memoryFreeMB = math.floor(free / 1024);
+            stats.memoryUsedMB = stats.memoryTotalMB - stats.memoryFreeMB;
+            stats.memoryUsedPercent = math.floor((stats.memoryUsedMB * 100) / stats.memoryTotalMB);
+            break;
+        }
+        // 磁盘
+        var disks = {};
+        for(_, item in com.wmi.each("SELECT DeviceID, Size, FreeSpace FROM Win32_LogicalDisk WHERE DriveType = 3")){
+            table.push(disks, {
+                drive = item.DeviceID;
+                totalGB = math.floor((tonumber(item.Size) || 0) / 1024 / 1024 / 1024);
+                freeGB = math.floor((tonumber(item.FreeSpace) || 0) / 1024 / 1024 / 1024);
+            });
+        }
+        stats.disks = disks;
+        response.write(JSON.stringify({ok=true; stats=stats}, true));
+    } catch(e){
+        response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+    }
+};
+
+// 目录总大小 + 文件数 (对应工具11 扩展)
+api["/api/files/dirsize"] = function(response, request){
+    var path = request.get.path;
+    if(!path || !fsys.isDir(path)){ response.write(JSON.stringify({ok=false; error="需要有效的 path"}, true)); return; }
+    try{
+        var totalSize = 0;
+        var fileCount = 0;
+        var dirCount = 0;
+        fsys.enum(path, "*.*", function(dir, filename, fullpath){
+            if(!filename){ dirCount = dirCount + 1; return; }
+            fileCount = fileCount + 1;
+            try{ totalSize = totalSize + io.getSize(fullpath) } catch(e){}
+        }, true);
+        response.write(JSON.stringify({
+            ok=true; path=path;
+            totalBytes=totalSize; totalMB=math.floor(totalSize/1024/1024);
+            files=fileCount; dirs=dirCount;
+        }, true));
+    } catch(e){
+        response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+    }
+};
+
+// 帮助// 帮助
+api["/api/help"] = function(response, request){
+    // 核心列表 (模块一: 系统能力, 少而精)
+    var core = {
+        "GET /api/health"="健康检查";
+        "GET /api/help"="这个帮助";
+        "GET /api/system-info"="系统信息";
+        "GET /api/system/stats"="CPU/内存/磁盘监控";
+        "GET /api/clipboard"="读剪贴板";
+        "GET /api/clipboard/set?text=xxx"="写剪贴板";
+        "GET /api/window-info"="当前窗口";
+        "GET /api/window-list"="所有顶层窗口";
+        "GET /api/window/topmost?hwnd=&on=1"="窗口置顶";
+        "GET /api/screenshot?path=xxx&mode=full|window"="截图";
+        "GET /api/screen/info"="屏幕信息";
+        "GET /api/screen/pixel?x=&y="="屏幕取色";
+        "GET /api/find-files?path=C:&pattern=*.txt&max=20&recurse=1"="搜索文件";
+        "GET /api/files/dirsize?path="="目录大小统计";
+        "GET /api/processes?max=50&sort=memory|name|pid"="进程列表";
+        "GET /api/processes/kill?pid="="结束进程";
+        "GET /api/exec?cmd=xxx"="执行命令 (同步等结果)";
+        "GET /api/exec-bg?cmd=xxx"="后台执行 (立即返回 PID)";
+        "GET /api/launch?path=xxx"="启动应用";
+        "GET /api/keyboard?text=hello"="键入文本";
+        "GET /api/keyboard?keys=Ctrl+C"="按组合键";
+        "GET /api/mouse/pos"="鼠标当前位置";
+        "GET /api/mouse/move?x=&y="="移动鼠标 (绝对坐标)";
+        "GET /api/mouse/click?x=&y=&button=&count="="鼠标点击 (左/右/中, 单/双击)";
+        "GET /api/mouse/scroll?dy=120"="鼠标滚轮 (正上负下)";
+        "GET /api/mouse/drag?x1=&y1=&x2=&y2="="鼠标拖拽";
+        "GET /api/http?url=https://..."="HTTP 代理";
+        "GET /api/net-info"="网卡信息";
+        "GET /api/eval?expr=time.now()"="求值 aardio 表达式 (万能钥匙)";
+        "GET /api/sqlite/query?path=&sql="="SQLite 查询";
+        "GET /api/hosts/read"="读 hosts 文件";
+    };
+    // 扩展列表 (模块二, ext-tools.aardio 注册到 api["__ext_help__"])
+    var ext = {};
+    try{ ext = rpc_api["__ext_help__"] || {}; } catch(e){}
+    var all = {};
+    for(k, v in core) all[k] = v;
+    for(k, v in ext) all[k] = v;
+    response.write(JSON.stringify({
+        name="aardio RPC Server v2.5 (核心 + 扩展)";
+        port=rpc_port;
+        note="核心 = 系统能力(缺一不可); 扩展 = 基于核心构建的工具(可增删)";
+        coreCount = table.count ? table.count(core) : 0;
+        extCount = table.count ? table.count(ext) : 0;
+        endpoints=all;
+    }, true));
+};
+
+// 根
+api["/"] = function(response, request){
+    response.write(JSON.stringify({name="aardio RPC Server v2"; version="2.5"; endpoints="/api/help"}, true));
+};
+
+// 404
+api["__notfound__"] = function(response, request){
+    response.status = "404 Not Found";
+    response.write(JSON.stringify({ok=false; error="Not Found"; path=request.path}, true));
+};
+
+// ----- 启动 HTTP Server -----
+// 端口被占时自动 +1 偏移 (最多 50 次), 实际端口写入 port.txt 供 MCP bridge 动态发现
+var server = null;
+var lastErr = "";
+for(i=0; 50; 1){
+    var s, errMsg = wsock.tcp.simpleHttpServer(HOST, PORT);
+    if(s){ server = s; break; }
+    lastErr = tostring(errMsg);
+    rpc_log("  端口 " ++ PORT ++ " 绑定失败: " ++ lastErr);
+    PORT = PORT + 1;
+}
+if(!server){
+    var portMsg = "端口 " ++ BASE_PORT ++ "~" ++ (BASE_PORT + 50) ++ " 全部绑定失败! 最后错误: " ++ lastErr ++ " (netstat -ano | findstr " ++ BASE_PORT ++ ")";
+    rpc_log(portMsg);
+    error(portMsg, 2);
+}
+rpc_log("========================================");
+rpc_log("  aardio RPC Server v2 启动");
+rpc_log("  http://" ++ HOST ++ ":" ++ PORT);
+rpc_log("  PID: " ++ process.getId());
+rpc_log("========================================");
+// 记录实际监听端口 (供 scripts/mcp-aardio-bridge.py 动态读取, 端口偏移后依然能连上)
+try{
+    var rpcDir = io.appData("/aardio-rpc");
+    if(!fsys.isDir(rpcDir)) fsys.createDir(rpcDir);
+    string.save(io.appData("/aardio-rpc/port.txt"), tostring(PORT), false);
+} catch(e){}
+// 根路径 "/" 会被 defaultDocument 重写为 "/main.aardio" (ctor 默认值), 清空保持 "/" 走 api["/"]
+server.defaultDocument = "";
+
+// 重要 (踩坑记录): simpleHttpServer 的 ctor 里 this 被替换成 wsock.tcp.server 的实例,
+// 所以在 namespace wsock.tcp.simpleHttpServer 里设的 threadGlobal / onThreadCreated
+// 对实例不可见 (属性查找链是 wsock.tcp.server, 不是 simpleHttpServer)。
+// ctor + run() 模式必须在实例上直接设置这两个属性:
+server.threadGlobal = {
+    rpc_log_ts = RPC_LOG_TS;
+    rpc_log_path = LOG_PATH;
+    rpc_port = PORT;
+    rpc_api = api;
+};
+server.onThreadCreated = worker_imports;
+
+try {
+    server.run(function(response, request){
+        var path = request.path || "/";
+        var apiTable = rpc_api;
+        try{
+            if(apiTable && apiTable[path]){
+                apiTable[path](response, request);
+            } else {
+                apiTable["__notfound__"](response, request);
+            }
+        } catch(e){
+            try{
+                response.status = "500 Internal Server Error";
+                response.write(JSON.stringify({ok=false; error=tostring(e); path=path}, true));
+            } catch(e2){
+                // 实在写不出去, 忽略
+            }
+        }
+    });
+} catch(e) {
+    rpc_log("服务器异常: " ++ tostring(e));
+}
+
+rpc_log("已停止");

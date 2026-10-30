@@ -1,0 +1,223 @@
+//===================================================================
+// 工具26: SQLite 数据库查看器
+// 功能: 打开 .db 文件,浏览表/数据,执行 SQL,导入导出
+//===================================================================
+
+import win.ui;
+import sqlite;
+import fsys.dlg;
+
+var main = win.form(text="SQLite 查看器";right=900;bottom=600;border="thin")
+main.add(
+lblDb={cls="static";text="数据库:";left=10;top=10;right=80;bottom=30;z=1};
+edtDb={cls="edit";text="";left=90;top=5;right=700;bottom=30;edge=1;z=2};
+btnOpen={cls="button";text="打开";left=705;top=5;right=780;bottom=30;z=3};
+btnNew={cls="button";text="新建";left=785;top=5;right=850;bottom=30;z=4};
+btnSave={cls="button";text="保存";left=855;top=5;right=895;bottom=30;z=4};
+tabs={cls="listbox";text="";left=10;top=40;right=200;bottom=580;edge=1;vscroll=1;z=5};
+toolbar={cls="bk";left=210;top=40;right=890;bottom=70;bgcolor=0xF0F0F0;z=6};
+edtSql={cls="edit";text="SELECT * FROM sqlite_master WHERE type='table';";left=220;top=45;right=750;bottom=65;edge=1;font=LOGFONT(name="Consolas";h=-12);z=7};
+btnRun={cls="button";text="执行 (F5)";left=755;top=43;right=830;bottom=65;z=8};
+btnExport={cls="button";text="导出";left=835;top=43;right=890;bottom=65;z=9};
+schema={cls="edit";text="";left=210;top=75;right=890;bottom=160;bgcolor=0xFFFBE6;edge=1;hscroll=1;multiline=1;readonly=1;vscroll=1;z=10};
+data={cls="listview";text="";left=210;top=165;right=890;bottom=540;edge=1;fullRow=1;grid=1;hscroll=1;vscroll=1;z=11};
+status={cls="static";text="就绪";left=10;top=585;right=890;bottom=600;color=0x666666;transparent=1;z=12}
+)
+
+var currentDb = null;
+var dbPath = "";
+
+main.btnOpen.oncommand = function(){
+    var f = fsys.dlg.open("选择 SQLite 数据库", , main.hwnd, "SQLite 数据库|*.db;*.sqlite;*.db3")
+    if(f){
+        openDb(f);
+    }
+}
+
+main.btnNew.oncommand = function(){
+    var f = fsys.dlg.save("新建数据库", "new.db", "SQLite 数据库|*.db", main.hwnd)
+    if(f){
+        try{
+            var db = sqlite(f);
+            db.close();
+            openDb(f);
+        } catch(e){
+            main.msgbox("创建失败: " ++ tostring(e), "错误", 0x10);
+        }
+    }
+}
+
+var openDb = function(path){
+    try{
+        if(currentDb){
+            currentDb.close();
+        }
+        currentDb = sqlite(path);
+        dbPath = path;
+        main.edtDb.text = path;
+        refreshTabs();
+        main.status.text = "已打开: " ++ path;
+    } catch(e){
+        main.msgbox("打开失败: " ++ tostring(e), "错误", 0x10);
+    }
+}
+
+var refreshTabs = function(){
+    main.tabs.clear();
+    main.tabs.add("📋 表和视图");
+    main.tabs.add("🔍 查询");
+    if(currentDb){
+        try{
+            for(row in currentDb.query("SELECT name, type FROM sqlite_master WHERE type IN ('table','view') ORDER BY type, name")){
+                var icon = row.type == "view" ? "👁️" : "📊";
+                main.tabs.add(icon ++ "  " ++ row.name);
+            }
+        } catch(e){
+            main.status.text = "读取表失败: " ++ tostring(e);
+        }
+    }
+}
+
+var showTable = function(tableName){
+    try{
+        // schema
+        var schema = "";
+        for(row in currentDb.query("SELECT sql FROM sqlite_master WHERE name='" ++ tableName ++ "' OR tbl_name='" ++ tableName ++ "'")){
+            if(row.sql) schema = schema ++ row.sql ++ ";\n\n";
+        }
+        main.schema.text = schema;
+        // data
+        main.data.clear();
+        main.data.clearColumn();
+        // 先读一行获取列名
+        var firstRow = null;
+        var rowCount = 0;
+        for(row in currentDb.query("SELECT * FROM " ++ tableName ++ " LIMIT 1")){
+            firstRow = row;
+            for(k, _ in row){
+                main.data.insertColumn(tostring(k), 120);
+            }
+            break;
+        }
+        if(firstRow){
+            for(row in currentDb.query("SELECT * FROM " ++ tableName)){
+                var arr = {};
+                for(k, v in row){
+                    if(v === null) table.push(arr, "NULL");
+                    else table.push(arr, tostring(v));
+                }
+                main.data.addItem(arr);
+                rowCount = rowCount + 1;
+            }
+        }
+        main.status.text = "表 " ++ tableName ++ " - " ++ rowCount ++ " 行";
+    } catch(e){
+        main.status.text = "错误: " ++ tostring(e);
+    }
+}
+
+main.tabs.onSelChange = function(){
+    var idx = main.tabs.selIndex;
+    if(!idx) return;
+    if(idx == 1){
+        // 全部表
+        main.schema.text = "请选择左侧具体表查看 schema 和数据";
+        main.data.clear();
+        main.data.clearColumn();
+    } else if(idx >= 2){
+        // 具体表
+        var item = main.tabs.getItemText(idx);
+        var name = string.trim(string.slice(item, 4));
+        showTable(name);
+    }
+}
+
+main.btnRun.oncommand = function(){
+    if(!currentDb){
+        main.msgbox("请先打开数据库", "提示", 0x40);
+        return;
+    }
+    var sql = main.edtSql.text;
+    if(#sql == 0) return;
+    try{
+        // 判断 SQL 类型
+        var trimmed = string.trim(string.lower(sql));
+        if(string.startWith(trimmed, "select") || string.startWith(trimmed, "pragma")){
+            // 查询
+            main.data.clear();
+            main.data.clearColumn();
+            var rowCount = 0;
+            var firstRow = null;
+            for(row in currentDb.query(sql)){
+                if(!firstRow){
+                    firstRow = row;
+                    for(k, _ in row){
+                        main.data.insertColumn(tostring(k), 120);
+                    }
+                }
+                var arr = {};
+                for(k, v in row){
+                    if(v === null) table.push(arr, "NULL");
+                    else table.push(arr, tostring(v));
+                }
+                main.data.addItem(arr);
+                rowCount = rowCount + 1;
+            }
+            main.status.text = "查询返回 " ++ rowCount ++ " 行";
+            main.schema.text = "查询: " ++ sql;
+        } else {
+            // 执行
+            currentDb.exec(sql);
+            main.status.text = "执行成功";
+            refreshTabs();
+        }
+    } catch(e){
+        main.status.text = "错误: " ++ tostring(e);
+        main.msgbox("SQL 错误:\n" ++ tostring(e), "错误", 0x10);
+    }
+}
+
+main.reghotkey(main.btnRun.oncommand, 0, 0x74/*VK_F5*/);
+
+main.btnSave.oncommand = function(){
+    if(currentDb){
+        currentDb.close();
+        main.status.text = "已保存 (SQLite 自动提交)";
+    }
+};
+
+main.btnExport.oncommand = function(){
+    if(!currentDb){
+        return;
+    }
+    import fsys.dlg;
+    var f = fsys.dlg.save("导出为 CSV", "export.csv", "CSV 文件|*.csv")
+    if(f){
+        try{
+            var content = "";
+            // 简单导出当前查询结果
+            for(i=0; main.data.count-1; 1){
+                for(j=0; main.data.getColumnCount()-1; 1){
+                    if(j > 0) content = content ++ ",";
+                    var v = main.data.getItemText(i+1, j+1);
+                    if(string.find(v, ',') || string.find(v, '"') || string.find(v, '\n')){
+                        content = content ++ '"' ++ string.replace(v, '"', '""') ++ '"';
+                    } else {
+                        content = content ++ v;
+                    }
+                }
+                content = content ++ "\r\n";
+            }
+            string.save(f, content, false);
+            main.status.text = "已导出到: " ++ f;
+        } catch(e){
+            main.msgbox("导出失败: " ++ tostring(e), "错误", 0x10);
+        }
+    }
+}
+
+// 加载示例
+main.status.text = "就绪 - 打开或新建数据库开始";
+
+main.show();
+win.loopMessage();
