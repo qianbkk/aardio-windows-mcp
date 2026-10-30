@@ -41,6 +41,7 @@
 aardio_1/
 ├── README.md                          ← 项目说明文档
 ├── docs/
+│   ├── CORE-BOOTSTRAP-SPEC.md         ← ★ 核心自举层与扩展层架构规范 (完备性证明与分层准则)
 │   ├── AARDIO-BRIDGE.md               ← 50 个 HTTP RPC 端点完整接口说明
 │   ├── EXPERIENCE.md                  ← aardio 踩坑实录与最佳实践
 │   └── MAINTENANCE.md                 ← 维护与自动化构建指南
