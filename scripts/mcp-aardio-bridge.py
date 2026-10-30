@@ -235,6 +235,15 @@ async def do_mouse_click(args: dict):
 async def do_mouse_scroll(args: dict):
     return text_out(rpc_call("/api/mouse/scroll", {"dy": str(args.get("dy", 120))}))
 
+async def do_server_stop(args: dict):
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/IM", "rpc-server.exe"], capture_output=True)
+            return text_out({"ok": True, "message": "aardio RPC Server 已成功停止并完全释放后台资源。后续需要使用时，调用任意 MCP 工具即可再次自动按需拉起。"})
+    except Exception as e:
+        return text_out({"ok": False, "error": str(e)})
+    return text_out({"ok": True})
+
 
 TOOLS = [
     # ---- 元工具 (完全自主) ----
@@ -271,6 +280,7 @@ TOOLS = [
     Tool(name="mouse_move", description="移动鼠标到绝对坐标 (computer use), 左上角为 0,0", inputSchema={"type": "object", "properties": {"x": {"type": "integer"}, "y": {"type": "integer"}}, "required": ["x", "y"]}),
     Tool(name="mouse_click", description="鼠标点击 (computer use): button=left|right|middle, count=1|2, 可选 x/y 坐标", inputSchema={"type": "object", "properties": {"x": {"type": "integer"}, "y": {"type": "integer"}, "button": {"type": "string"}, "count": {"type": "integer"}}}),
     Tool(name="mouse_scroll", description="鼠标滚轮 (computer use): dy 正数上滚负数下滚, 一格约 120", inputSchema={"type": "object", "properties": {"dy": {"type": "integer"}}}),
+    Tool(name="server_stop", description="主动停止后台常驻的 aardio RPC Server 进程以释放内存与系统资源。后续再次调用任何工具时会自动重新按需拉起", inputSchema={"type": "object", "properties": {}}),
 ]
 
 HANDLERS = {
@@ -295,6 +305,7 @@ HANDLERS = {
     "mouse_move": do_mouse_move,
     "mouse_click": do_mouse_click,
     "mouse_scroll": do_mouse_scroll,
+    "server_stop": do_server_stop,
 }
 
 
