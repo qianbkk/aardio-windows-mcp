@@ -1,112 +1,131 @@
-# aardio Windows Automation MCP Bridge (aardio 能力桥)
+# aardio Windows Automation MCP Bridge
 
-> **一句话介绍**: 将轻量级、免安装的 Windows 原生开发神器 **aardio** 的全部系统能力封装为标准 **HTTP RPC** 与 **MCP (Model Context Protocol)** 协议。
-> 让任何 AI 智能体 (Agent)、大模型客户端或自动化脚本，都能零门槛直接调用 Windows 原生底层 API、Win32 GUI 自动化、鼠标/键盘输入、屏幕截图/OCR/取色、以及 aardio 内置的 1000+ 标准库。
+**English** | [简体中文](README_CN.md)
+
+> **Overview**: Encapsulate the full capabilities of **aardio**—the lightweight, zero-install, native Windows development language—into standard **HTTP RPC** and **MCP (Model Context Protocol)** protocols.  
+> Enables any AI Agent, LLM client, or automation script to seamlessly access native Windows Win32 APIs, GUI automation, high-precision mouse/keyboard control, screenshot/color-picker capabilities, and 1000+ aardio standard libraries without overhead.
 
 ```
 ┌────────────────────────────────────────────────────────┐
-│  AI 助手 / Agent 客户端 (DSH / Claude / Cursor / CLI)   │
+│  AI Assistant / Agent Clients (Claude / DSH / Cursor)  │
 └───────────────────────────┬────────────────────────────┘
-                            │ 标准 MCP stdio 协议
+                            │ Standard MCP stdio
                             ▼
 ┌────────────────────────────────────────────────────────┐
-│  MCP Bridge 协议适配层 (scripts/mcp-aardio-bridge.py)   │
-│  · 暴露 21 个语义化工具 (eval/exec/mouse/screenshot...)  │
-│  · 支持端口动态发现、服务后台自愈静默拉起              │
+│  MCP Bridge Protocol Layer (scripts/mcp-aardio-bridge) │
+│  · Exposes 22 semantic tools (eval/exec/mouse/screen)  │
+│  · On-demand cold start, auto-recovery & self-healing  │
 └───────────────────────────┬────────────────────────────┘
-                            │ 本地 HTTP RPC (127.0.0.1:42179)
+                            │ Local HTTP RPC (127.0.0.1:42179)
                             ▼
 ┌────────────────────────────────────────────────────────┐
-│  aardio 原生服务能力层 (dist/rpc-server.exe)           │
-│  · 核心模块 (31 端点): 鼠标键盘/窗口句柄/进程/eval/exec │
-│  · 扩展模块 (19 端点): 图像转换/二维码/加解密/系统工具 │
+│  aardio Native Service Layer (dist/rpc-server.exe)     │
+│  · Core Bootstrap (31 endpoints): mouse/keys/proc/eval │
+│  · Extension Layer (19 endpoints): images/QR/vault/etc.│
 └────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## ✨ 核心特性
+## ✨ Features
 
-- 🚀 **开箱即用，零环境依赖运行**：核心能力编译为单文件原生 Win32 可执行文件 (`rpc-server.exe`，仅约 3MB)，无需安装庞大运行时。
-- 🔄 **服务自愈与自拉起**：MCP 桥接层内置保活自愈机制；当底层服务未启动或异常退出时，Bridge 自动静默拉起服务并重试。
-- ⚡ **万能自举动态 Eval**：提供 `/api/eval` 端点，支持在 aardio 运行时中动态执行任意 aardio 脚本，直接操纵 Win32 API、COM 组件、WMI、GDI+ 绘图、注册表等。
-- 🖱️ **完整的 Computer Use 支持**：内置鼠标高精度移动、点击、拖拽、滚轮、键盘按键组合、全屏/窗口截图，满足各类桌面自动化需求。
-- 🔌 **全生态 Agent 兼容**：兼容 DeepSeek Harness (DSH)、Claude Desktop、Claude Code、Cursor、Windsurf、LibreChat 及各类原生 MCP 客户端。
+- 🚀 **Zero Setup & Standalone**: Pre-compiled as a single native Win32 executable (`rpc-server.exe`, ~3MB). No heavyweight runtimes, SDKs, or installations required.
+- 🔄 **On-Demand Cold Start & Self-Healing**: The MCP Bridge automatically detects service health. If the server is offline or terminated, it starts silently in < 0.5s and retries seamlessly. Zero background memory footprint when not in use.
+- ⚡ **Turing-Complete Dynamic Eval**: The `/api/eval` endpoint dynamically runs arbitrary aardio scripts at runtime, granting AI immediate access to 1000+ Win32, COM, WMI, GDI+, and cryptographic libraries.
+- 🖱️ **Full Computer Use Primitives**: Precise absolute mouse coordinate control, left/right/double clicks, scrolling, drag-and-drop, keyboard hotkeys/combinations, and multi-monitor screen capture.
+- 🔌 **Universal Agent Compatibility**: Tested with DeepSeek Harness (DSH), Claude Desktop, Claude Code, Cursor, Windsurf, LibreChat, and standard MCP clients.
+- 🛑 **Complete Lifecycle Control**: Includes the `server_stop` tool, allowing AI to shut down background processes and free resources once automation tasks are finished.
 
 ---
 
-## 📁 目录结构
+## 📁 Repository Structure
 
 ```
 aardio_1/
-├── README.md                          ← 项目说明文档
+├── README.md                          ← Project README (English)
+├── README_CN.md                       ← 中文项目说明 (Chinese)
 ├── docs/
-│   ├── CORE-BOOTSTRAP-SPEC.md         ← ★ 核心自举层与扩展层架构规范 (完备性证明与分层准则)
-│   ├── AARDIO-BRIDGE.md               ← 50 个 HTTP RPC 端点完整接口说明
-│   ├── EXPERIENCE.md                  ← aardio 踩坑实录与最佳实践
-│   └── MAINTENANCE.md                 ← 维护与自动化构建指南
-├── projects/00-rpc-server/            ← 服务端核心源码
-│   ├── default.aproj                  ← aardio 工程文件
-│   ├── main.aardio                    ← 核心模块 (31 个系统端点 + eval/exec 万能钥匙)
-│   ├── ext-tools.aardio               ← 扩展模块 (19 个实用工具端点)
+│   ├── CORE-BOOTSTRAP-SPEC.md         ← Architectural spec & self-bootstrap proof
+│   ├── AARDIO-BRIDGE.md               ← Full 50-endpoint RPC API reference
+│   ├── EXPERIENCE.md                  ← Development notes & best practices
+│   └── MAINTENANCE.md                 ← Maintenance & automated build guide
+├── projects/00-rpc-server/            ← Core server source code
+│   ├── default.aproj                  ← aardio project definition
+│   ├── main.aardio                    ← Core bootstrap module (31 endpoints)
+│   ├── ext-tools.aardio               ← Extension module (19 utility endpoints)
 │   └── dist/
-│       ├── rpc-server.exe             ← 编译产物 (双击即跑，静默常驻)
-│       └── ext-tools.aardio           ← 扩展模块分发副本
+│       ├── rpc-server.exe             ← Compiled standalone server binary
+│       └── ext-tools.aardio           ← Extension module distribution copy
 ├── scripts/
-│   ├── mcp-aardio-bridge.py           ← MCP Bridge 桥接脚本 (提供 21 个标准 MCP 工具)
-│   ├── service-autostart.py           ← 开机自启管理脚本 (纯 Python，无额外依赖)
-│   ├── rebuild-rpc-server.py          ← 无人值守自动化重编译脚本
-│   ├── stop-server.ps1                ← 优雅停止服务脚本
-│   └── test-all-endpoints.ps1         ← 全端点自动化回归测试
-└── tools/                             ← 30 个开箱即用的原生 aardio 实用小工具
+│   ├── mcp-aardio-bridge.py           ← Python MCP Bridge (22 MCP tools)
+│   ├── service-autostart.py           ← Optional autostart manager (winreg)
+│   ├── rebuild-rpc-server.py          ← Unattended automated re-compilation
+│   ├── stop-server.ps1                ← Graceful shutdown script
+│   └── test-all-endpoints.ps1         ← Full regression test suite
+└── tools/                             ← 30 standalone native aardio GUI desktop utilities
 ```
 
 ---
 
-## 🚀 快速上手
+## 🚀 Quick Start
 
-### 1. 运行底层 RPC 服务
-进入项目目录后，直接运行编译好的服务：
+### 1. Launch the Native RPC Server
+Run the standalone pre-compiled executable directly:
 ```powershell
 .\projects\00-rpc-server\dist\rpc-server.exe
 ```
-> **端口说明**：服务默认监听 `127.0.0.1:42179`。如果该端口被占用，服务会自动递增端口并将实际端口写入 `%LOCALAPPDATA%\aardio-rpc\port.txt`，供 MCP 桥接层自动读取。
+> **Port Discovery**: By default, listens at `127.0.0.1:42179`. If occupied, automatically offsets and saves the active port to `%LOCALAPPDATA%\aardio-rpc\port.txt` for the MCP Bridge to discover.
 
-验证服务状态：
+Verify health status:
 ```bash
 curl http://127.0.0.1:42179/api/health
-# 返回: {"ok":true,"port":42179,"status":"running",...}
+# Output: {"ok":true,"port":42179,"status":"running",...}
 ```
 
-### 2. 通过 HTTP 直接调用（任意语言/脚本）
+### 2. Direct HTTP Usage (Any Language / CLI)
 ```bash
-# 1. 读取系统剪贴板
+# 1. Read system clipboard
 curl "http://127.0.0.1:42179/api/clipboard"
 
-# 2. 执行系统命令
+# 2. Execute command
 curl "http://127.0.0.1:42179/api/exec?cmd=ipconfig"
 
-# 3. 执行动态 aardio 代码 (调用 1000+ 标准库)
+# 3. Dynamic aardio evaluation (access 1000+ libraries)
 curl "http://127.0.0.1:42179/api/eval?expr=time.now()"
 
-# 4. 获取鼠标当前坐标
+# 4. Get current cursor coordinates
 curl "http://127.0.0.1:42179/api/mouse/pos"
 
-# 5. 查看全部 50 个端点清单与说明
+# 5. List all 50 available endpoints
 curl "http://127.0.0.1:42179/api/help"
 ```
 
 ---
 
-## 🤖 接入 AI 客户端 (MCP 方式)
+## 🤖 AI Agent Integration (MCP)
 
-安装 Python 依赖（推荐 Python 3.10+）：
+Install Python dependencies (Python 3.10+ recommended):
 ```bash
 pip install mcp
 ```
 
-### 1. DeepSeek Harness (DSH)
-在你的 `cordis.patch.yml`（或对应 profile 配置）中添加：
+### 1. Claude Desktop / Cursor / Windsurf
+Add to `claude_desktop_config.json` or `mcp.json`:
+```json
+{
+  "mcpServers": {
+    "aardio-bridge": {
+      "command": "python",
+      "args": [
+        "D:/path/to/aardio_1/scripts/mcp-aardio-bridge.py"
+      ]
+    }
+  }
+}
+```
+
+### 2. DeepSeek Harness (DSH)
+Add to your profile configuration (`cordis.patch.yml`):
 ```yaml
 - id: mcp-aardio
   name: "@deepseek-ai/dsh-mcp-client"
@@ -119,23 +138,8 @@ pip install mcp
     failOnStartupError: false
 ```
 
-### 2. Claude Desktop / Cursor / Windsurf
-在客户端配置文件（如 `claude_desktop_config.json` 或 `mcp.json`）中添加：
-```json
-{
-  "mcpServers": {
-    "aardio-bridge": {
-      "command": "python",
-      "args": [
-        "D:/path/to/aardio_1/scripts/mcp-aardio-bridge.py"
-      ]
-    }
-  }
-}
-```
-
 ### 3. Claude Code CLI
-在 `~/.claude.json` 中配置：
+Add to `~/.claude.json`:
 ```json
 {
   "mcpServers": {
@@ -151,41 +155,42 @@ pip install mcp
 
 ---
 
-## 🛠️ MCP 核心工具一览
+## 🛠️ MCP Tools Reference (22 Tools)
 
-| 工具名称 | 分类 | 说明 |
+| Tool Name | Category | Description |
 |---|---|---|
-| `list_endpoints` | 元工具 | 动态列出 RPC Server 当前所有 50+ 端点（支持新增端点热发现） |
-| `call_endpoint` | 元工具 | 通用调用任意 RPC 端点，无需改写 Bridge 即可扩充能力 |
-| `eval` | 万能钥匙 | 在 aardio 运行时中动态执行任意 aardio 表达式，可调度系统底层及全部 1000+ 标准库 |
-| `clipboard_read` / `clipboard_write` | 剪贴板 | 读取 / 写入系统剪贴板内容 |
-| `exec` / `exec_bg` | 命令执行 | 同步或后台执行 cmd/PowerShell 进程并获取输出或 PID |
-| `screenshot` | 屏幕捕获 | 截取全屏或当前活动窗口并保存为图片 |
-| `mouse_pos` / `mouse_move` / `mouse_click` / `mouse_scroll` | Computer Use | 绝对坐标定位、单击/双击/右击、鼠标滚轮操作 |
-| `keyboard` | 输入模拟 | 发送快捷键组合（如 `Ctrl+C`）或键入文本串 |
-| `window_list` / `window_topmost` | 窗口管理 | 枚举全系统窗口句柄与标题，窗口置顶控制 |
-| `process_list` / `process_kill` | 进程管理 | 按内存/CPU/PID 排序查看进程列表，根据 PID 终止进程 |
-| `find_files` | 文件检索 | 支持通配符与递归搜索的轻量级高速文件定位器 |
-| `http_get` / `weather` / `sqlite_query` | 实用工具 | 网络代理请求、城市天气查询、直接对 SQLite 执行 SQL 查询 |
+| `list_endpoints` | Meta | Dynamically inspect all 50+ available RPC endpoints at runtime |
+| `call_endpoint` | Meta | Generic caller for any RPC endpoint without modifying bridge code |
+| `eval` | Core | Execute arbitrary aardio expressions; access all 1000+ Win32/COM libraries |
+| `server_stop` | Lifecycle | Stop background server to free memory; automatically relaunches on next tool call |
+| `clipboard_read` / `clipboard_write` | Clipboard | Read from or write text to the Windows system clipboard |
+| `exec` / `exec_bg` | Shell | Synchronous or non-blocking command execution returning output or PID |
+| `screenshot` | Vision | Capture full screen or active window to an image file |
+| `mouse_pos` / `mouse_move` / `mouse_click` / `mouse_scroll` | Computer Use | Cursor positioning, click simulation (left/right/double), wheel scroll |
+| `keyboard` | Input | Send keystrokes, hotkeys (`Ctrl+C`, `F7`), or type arbitrary text strings |
+| `window_list` / `window_topmost` | Windows | Enumerate all desktop window handles/titles and toggle topmost status |
+| `process_list` / `process_kill` | Processes | Query running processes sorted by RAM/CPU/PID, and terminate processes |
+| `find_files` | Filesystem | High-performance wildcard and recursive file scanner |
+| `http_get` / `weather` / `sqlite_query` | Utilities | Native HTTP proxy, weather queries, and direct SQLite query execution |
 
-> 完整 50 个端点参数详解见 [`docs/AARDIO-BRIDGE.md`](docs/AARDIO-BRIDGE.md)。
+> Detailed endpoint documentation is available in [`docs/AARDIO-BRIDGE.md`](docs/AARDIO-BRIDGE.md) and architectural theory in [`docs/CORE-BOOTSTRAP-SPEC.md`](docs/CORE-BOOTSTRAP-SPEC.md).
 
 ---
 
-## ⚙️ 编译与二次开发
+## ⚙️ Compilation & Development
 
-如果你需要修改 aardio 源码或增加自定义底层端点：
-1. 下载免费小巧的 [aardio 官方 IDE](https://aardio.com)（仅约 6.5MB，解压即用）。
-2. 用 aardio 打开 `projects/00-rpc-server/default.aproj` 工程。
-3. 修改 `main.aardio`（核心端点）或 `ext-tools.aardio`（扩展端点）。
-4. 在 IDE 中按下 **F7** 发布生成新版 `dist/rpc-server.exe`。
-5. 或直接使用本项目提供的自动化脚本无人值守编译：
+To modify source code or add custom low-level endpoints:
+1. Download the free, portable [aardio IDE](https://aardio.com) (~6.5MB).
+2. Open `projects/00-rpc-server/default.aproj`.
+3. Edit `main.aardio` (core endpoints) or `ext-tools.aardio` (extension endpoints).
+4. Press **F7** inside the IDE to publish a fresh `dist/rpc-server.exe`.
+5. Alternatively, run the unattended headless rebuild script:
    ```powershell
    python scripts/rebuild-rpc-server.py
    ```
 
 ---
 
-## 📄 开源许可
+## 📄 License
 
-本项目遵循 MIT License 开源协议，欢迎自由接入、修改与二次扩展。
+Distributed under the [MIT License](LICENSE). Free for both personal and commercial use.
