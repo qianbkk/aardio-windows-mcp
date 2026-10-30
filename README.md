@@ -125,7 +125,22 @@ Add to `claude_desktop_config.json` or `mcp.json`:
 ```
 
 ### 2. DeepSeek Harness (DSH)
-Add to your profile configuration (`cordis.patch.yml`):
+
+#### Option A: Native DSH Plugin (`dsh-plugin-aardio`) — With Web GUI Toggle Switch!
+Install the bundled package into your profile (e.g. `~/.dsh/profiles/desktop`):
+```bash
+pnpm add file:D:/path/to/aardio_1/packages/dsh-plugin-aardio
+```
+Add to `cordis.patch.yml`:
+```yaml
+- id: dsh-plugin-aardio
+  name: "dsh-plugin-aardio"
+  disabled: false
+```
+*Renders an independent plugin card with an interactive toggle switch in the DSH Web GUI!*
+
+#### Option B: Standard MCP Client
+Add to `cordis.patch.yml`:
 ```yaml
 - id: mcp-aardio
   name: "@deepseek-ai/dsh-mcp-client"

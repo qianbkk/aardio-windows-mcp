@@ -1,0 +1,44 @@
+{
+  "name": "dsh-plugin-aardio",
+  "version": "1.0.0",
+  "description": "DeepSeek Harness (DSH) 原生插件：Windows 系统级桌面自动化、鼠标键盘模拟、屏幕截图、进程与 1000+ aardio 核心能力",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": {
+      "default": "./index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "README.md",
+    "package.json"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "windows-automation",
+    "desktop-automation",
+    "computer-use",
+    "aardio",
+    "mcp"
+  ],
+  "author": "qianbkk",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/qianbkk/aardio-windows-mcp.git",
+    "directory": "packages/dsh-plugin-aardio"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": ">=4.0.0"
+  }
+}

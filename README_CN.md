@@ -110,7 +110,22 @@ pip install mcp
 ```
 
 ### 1. DeepSeek Harness (DSH)
-在你的 `cordis.patch.yml`（或对应 profile 配置）中添加：
+
+#### 方案 ①：DSH 原生插件形式 (`dsh-plugin-aardio`) —— 支持 Web GUI 可视化开关！
+在当前 DSH 配置文件目录（如 `~/.dsh/profiles/desktop`）下安装：
+```bash
+pnpm add file:D:/path/to/aardio_1/packages/dsh-plugin-aardio
+```
+在 `cordis.patch.yml` 中启用：
+```yaml
+- id: dsh-plugin-aardio
+  name: "dsh-plugin-aardio"
+  disabled: false
+```
+*在 DSH Web GUI（http://127.0.0.1:64588）的「插件管理」面板中将显示独立卡片与一键切换开关！*
+
+#### 方案 ②：通用 MCP 客户端方式
+在 `cordis.patch.yml` 中直接配置：
 ```yaml
 - id: mcp-aardio
   name: "@deepseek-ai/dsh-mcp-client"
