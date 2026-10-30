@@ -1,0 +1,4 @@
+# dsh-plugin-aardio bundle patch
+- insert:
+    - id: dsh-plugin-aardio
+      name: 'dsh-plugin-aardio'
