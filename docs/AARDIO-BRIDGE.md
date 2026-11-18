@@ -103,7 +103,7 @@ GET http://127.0.0.1:42179/api/eval?expr=time.now()
   }
 }
 ```
-> **提示**：运行 bridge 需安装官方 MCP 库：`pip install mcp`。Bridge 内部集成了自动拉起与自愈探针机制，在调用时若发现底层 `rpc-server.exe` 未启动，会自动在后台静默拉起并完成自愈重试。
+> **提示**：运行 bridge 需安装官方 MCP 库：`pip install -r scripts/requirements.txt`（同时支持 mcp 1.x 与 2.x）。Bridge 内部集成了自动拉起与自愈探针机制，在调用时若发现底层 `rpc-server.exe` 未启动，会自动在后台静默拉起并完成自愈重试。
 
 ---
 

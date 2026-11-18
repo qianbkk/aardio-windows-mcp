@@ -27,7 +27,14 @@ import urllib.parse
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
+from mcp.types import (
+    CallToolRequestParams,
+    CallToolResult,
+    ListToolsResult,
+    PaginatedRequestParams,
+    Tool,
+    TextContent,
+)
 
 # ---- 动态发现 RPC 端口与 Server EXE ----
 # 优先读环境变量与 rpc-server 写入的 port.txt (端口被占偏移后仍能连上); 缺省 42179
@@ -70,7 +77,18 @@ RPC_BASE = f"http://127.0.0.1:{RPC_PORT}"
 TIMEOUT = 120
 SERVER_EXE = _find_server_exe()
 
-server = Server("aardio-bridge")
+
+def _mcp_sdk_version() -> str:
+    """Report the installed MCP SDK version in the initialize handshake."""
+    try:
+        from importlib.metadata import version as _pkg_version
+
+        return _pkg_version("mcp")
+    except Exception:
+        return "unknown"
+
+
+server = Server("aardio-bridge", version=_mcp_sdk_version())
 
 
 # ---------- 底层: 自动拉起与自愈 ----------
@@ -309,20 +327,45 @@ HANDLERS = {
 }
 
 
-@server.list_tools()
-async def list_tools() -> list[Tool]:
-    return TOOLS
+# mcp >= 2.0 dropped the decorator based low level API (@server.list_tools())
+# in favour of constructor based handlers. Register the same two endpoints on
+# either SDK so the bridge keeps working with both mcp 1.x and mcp 2.x.
+if hasattr(server, "add_request_handler"):
 
+    async def _handle_list_tools(ctx, params) -> ListToolsResult:
+        return ListToolsResult(tools=TOOLS)
 
-@server.call_tool()
-async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-    try:
-        h = HANDLERS.get(name)
-        if not h:
-            return text_out({"ok": False, "error": f"未知工具: {name}"})
-        return await h(arguments or {})
-    except Exception as e:
-        return text_out({"ok": False, "error": f"{type(e).__name__}: {e}"})
+    async def _handle_call_tool(ctx, params) -> CallToolResult:
+        try:
+            h = HANDLERS.get(params.name)
+            if not h:
+                return CallToolResult(
+                    content=text_out({"ok": False, "error": f"未知工具: {params.name}"})
+                )
+            return CallToolResult(content=await h(params.arguments or {}))
+        except Exception as e:
+            return CallToolResult(
+                content=text_out({"ok": False, "error": f"{type(e).__name__}: {e}"})
+            )
+
+    server.add_request_handler("tools/list", PaginatedRequestParams, _handle_list_tools)
+    server.add_request_handler("tools/call", CallToolRequestParams, _handle_call_tool)
+
+else:
+
+    @server.list_tools()
+    async def list_tools() -> list[Tool]:
+        return TOOLS
+
+    @server.call_tool()
+    async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+        try:
+            h = HANDLERS.get(name)
+            if not h:
+                return text_out({"ok": False, "error": f"未知工具: {name}"})
+            return await h(arguments or {})
+        except Exception as e:
+            return text_out({"ok": False, "error": f"{type(e).__name__}: {e}"})
 
 
 async def main():
