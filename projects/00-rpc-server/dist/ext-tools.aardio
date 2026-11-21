@@ -315,6 +315,8 @@ print(json.dumps(decode(), ensure_ascii=True))
         var portsStr = request.get.ports || "80,443,3389";
         var timeout = tonumber(request.get.timeout) || 1500;
         if(!host){ response.write(JSON.stringify({ok=false; error="缺少 host"}, true)); return; }
+        if(timeout <= 0){ response.write(JSON.stringify({ok=false; error="timeout 必须大于 0（毫秒）"}, true)); return; }
+        var tcp;
         try{
             var ports = {};
             var portList = string.split(portsStr, ",");
@@ -325,21 +327,20 @@ print(json.dumps(decode(), ensure_ascii=True))
             var openList = {};
             var closedList = {};
             for(i, port in ports){
-                try{
-                    var tcp = wsock.tcp.client();
-                    tcp.settimeout(timeout);
-                    if(tcp.connect(host, port)){
-                        table.push(openList, port);
-                        tcp.close();
-                    } else {
-                        table.push(closedList, port);
-                    }
-                } catch(e){
+                tcp = wsock.tcp.client();
+                // connectTimeout 使用秒，接口 timeout 参数保持毫秒。
+                var connected = tcp.connectTimeout(host, port, timeout / 1000);
+                tcp.close();
+                tcp = null;
+                if(connected){
+                    table.push(openList, port);
+                } else {
                     table.push(closedList, port);
                 }
             }
             response.write(JSON.stringify({ok=true; host=host; open=openList; closed=closedList}, true));
         } catch(e){
+            if(tcp) tcp.close();
             response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
         }
     };
