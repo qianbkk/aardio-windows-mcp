@@ -2,7 +2,7 @@
 // ext-tools.aardio — 扩展工具模块 (模块二)
 // 挂载方式: 被 main.aardio 主线程用 loadcodex 加载, 顶层直接注册到全局 api 表
 // 用法: loadcodex(".../ext-tools.aardio")();  (api 必须是全局变量)
-// 端点清单 (全部只依赖标准库, 需在 main.aardio 的 onThreadCreated import):
+// 标准库依赖 (QR 读取另需可选 Python venv, 见 docs/AARDIO-BRIDGE.md):
 //   import gdip; import gdip.bitmap; import gdip.graphics; import gdip.family;
 //   import gdip.stringFormat; import crypt.aes; import wsock.tcp;
 //===================================================================
@@ -131,17 +131,64 @@
         }
     };
 
-    // 识别二维码: /api/qr/read?path=  (zbar 扩展库未装, 用在线识别 API)
+    // 识别本地二维码: /api/qr/read?path= (可选 Python + zxing-cpp + Pillow, 不联网)
     api["/api/qr/read"] = function(response, request){
         var path = request.get.path;
-        if(!path){ response.write(JSON.stringify({ok=false; error="需要 path"}, true)); return; }
+        if(!path){ response.write(JSON.stringify({ok=false; error="missing_path"; message="需要 path"}, true)); return; }
         try{
-            var http = inet.http();
-            var url = "https://api.qrserver.com/v1/read-qr-code/?fileurl=" ++ inet.url.encode("file:///" ++ path);
-            var body = http.get(url);
-            response.write(JSON.stringify({ok=true; raw=body}, true));
+            if(string.startWith(string.replaceLiteral(path, string.char(92), "/"), "//") || string.indexOf(path, "://")){
+                response.write(JSON.stringify({ok=false; error="invalid_path"; message="仅支持本地图片文件"}, true)); return;
+            }
+            if(!fsys.isFile(path)){
+                response.write(JSON.stringify({ok=false; error="file_not_found"}, true)); return;
+            }
+            // 固定程序目录下的可选 venv, 不从 PATH/CWD 或请求选择可执行文件。
+            var python = io.fullpath(io.joinpath(io._exedir, ".venv\Scripts\python.exe"));
+            if(!fsys.isFile(python)){
+                response.write(JSON.stringify({ok=false; error="decoder_unavailable"; message="在程序目录创建 .venv 并安装 zxing-cpp 和 Pillow，参见 docs/AARDIO-BRIDGE.md"}, true)); return;
+            }
+            // 源码随模块内嵌, 单独分发 dist 也不依赖仓库中的辅助脚本。
+            var decoder = /******
+import json
+import sys
+
+def decode():
+    try:
+        from PIL import Image, UnidentifiedImageError
+        import zxingcpp
+    except (ImportError, OSError):
+        return {"ok": False, "error": "decoder_unavailable", "message": "Install zxing-cpp and Pillow in the executable's .venv."}
+    try:
+        path = json.loads(sys.stdin.readline())["path"]
+        with Image.open(path) as image:
+            image.load()
+            codes = zxingcpp.read_barcodes(image.convert("RGB"), formats=zxingcpp.BarcodeFormat.QRCode, text_mode=zxingcpp.TextMode.Plain)
+    except FileNotFoundError:
+        return {"ok": False, "error": "file_not_found"}
+    except (UnidentifiedImageError, OSError, ValueError):
+        return {"ok": False, "error": "invalid_image"}
+    except Exception:
+        return {"ok": False, "error": "decode_failed"}
+    if not codes:
+        return {"ok": False, "error": "qr_not_found"}
+    texts = [code.text for code in codes]
+    return {"ok": True, "path": path, "text": texts[0], "texts": texts}
+
+print(json.dumps(decode(), ensure_ascii=True))
+******/;
+            var p = process.popen(python, {"-I"; "-X"; "utf8"; "-c"; decoder});
+            if(!p){ response.write(JSON.stringify({ok=false; error="decoder_unavailable"}, true)); return; }
+            p.codepage = 65001;
+            p.write(JSON.stringify({path=path}) ++ string.char(10));
+            var output = p.readAll();
+            p.wait();
+            var result = JSON.parse(output);
+            if(type(result) != "table" || type(result.ok) != "boolean"){
+                response.write(JSON.stringify({ok=false; error="decode_failed"}, true)); return;
+            }
+            response.write(JSON.stringify(result, true));
         } catch(e){
-            response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+            response.write(JSON.stringify({ok=false; error="decode_failed"; message=tostring(e)}, true));
         }
     };
 

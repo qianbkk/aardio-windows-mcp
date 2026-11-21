@@ -176,13 +176,46 @@ GET http://127.0.0.1:42179/api/eval?expr=time.now()
 | `GET /api/img/convert?src=&dst=` | 图片格式转换 |
 | `GET /api/img/watermark?src=&dst=&text=&pos=` | 图片文字水印 |
 | `GET /api/qr/generate?text=&path=` | 生成二维码（PNG 文件） |
-| `GET /api/qr/read?path=` | 识别二维码 |
+| `GET /api/qr/read?path=` | 本地识别二维码（可选 Python venv，安装见下文） |
 | `GET /api/rss/fetch?url=&max=` | 抓取解析 RSS |
 | `GET /api/scan/ports?host=&ports=` | 端口扫描 |
 | `GET /api/vault/set?key=&value=&pass=` | 密码保险库-加密写入 |
 | `GET /api/vault/get?key=&pass=` | 密码保险库-解密读取 |
 | `GET /api/vault/list` | 保险库 key 列表 |
 | `GET /api/translate?text=&to=` | 文本翻译 |
+
+#### 本地 QR 读取的可选依赖
+
+`/api/qr/read?path=` 仅读取本地图片，不上传图片或路径，也不会回退到在线服务。
+解释器固定为正在运行的 EXE 所在目录（`io._exedir`）下的 `.venv\Scripts\python.exe`，
+不从 PATH、当前工作目录或请求参数选择程序。图片路径通过 UTF-8 标准输入传递。
+
+在目标机器分发后的 `dist` 目录内，用已安装的 Python 创建此可选环境：
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --only-binary=:all: zxing-cpp==3.1.1 Pillow==13.0.0
+```
+
+已用 Python 3.13、zxing-cpp 3.1.1、Pillow 13.0.0 验证。依赖安装完成后，解码本身无需联网。
+单独复制 `dist` 时，将 `rpc-server.exe` 和 `ext-tools.aardio` 放在同一目录，并在目标机按上述步骤
+创建 `.venv`；解码源码已内嵌模块，不依赖仓库的 `scripts`。虚拟环境依赖其基础 Python，
+不要把另一台机器的 `.venv` 当作可移植运行时直接分发。IDE 模式的 `io._exedir` 是解释器目录，
+部署时建议使用 EXE 目录中的独立环境。
+
+成功示例：`{"ok":true,"path":"C:/images/qr.png","text":"hello","texts":["hello"]}`。
+`text` 是首个二维码文本，`texts` 包含所有识别出的二维码，保留 Unicode 和换行。
+失败始终返回 `ok=false`，`error` 为 `missing_path`、`invalid_path`（URL/UNC）、
+`file_not_found`、`decoder_unavailable`（解释器或依赖未安装）、`invalid_image`、
+`qr_not_found` 或 `decode_failed`。普通条码不当作二维码返回。
+
+回归测试（用装好依赖的 Python，在仓库根目录运行）：
+
+```powershell
+.\projects\00-rpc-server\dist\.venv\Scripts\python.exe -I -X utf8 scripts/test-qr-read.py
+```
+
+测试图片保留于已忽略的 `scripts/_qr-read-check`，测试不会启动、停止或重载 RPC 服务。
 
 ---
 
