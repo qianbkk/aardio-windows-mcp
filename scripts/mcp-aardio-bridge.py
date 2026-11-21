@@ -275,9 +275,9 @@ TOOLS = [
                                      "params": {"type": "object", "description": "查询参数"}},
                       "required": ["endpoint"]}),
     Tool(name="eval",
-         description="万能钥匙: 在 aardio 运行时执行任意 aardio 表达式, 可调用全部标准库 (gdip 绘图/crypt 加密/inet 网络/fsys 文件/win 窗口/com 组件...)。例: 'time.now()' / 'import gdip; gdip.bitmap()'",
+         description="万能钥匙: 在 aardio 运行时求值单个 aardio 表达式, 可调用已嵌入的标准库。例: '1+2' / '(function(){ var a=1; return a+2; })()'。多语句或函数体须包装为立即调用的函数表达式 (IIFE); 直接传 'var a=1; return a+2;' 会语法错误。",
          inputSchema={"type": "object",
-                      "properties": {"expr": {"type": "string", "description": "aardio 表达式"}},
+                      "properties": {"expr": {"type": "string", "description": "单个 aardio 表达式; 多语句须包装为 IIFE, 用 return 返回结果"}},
                       "required": ["expr"]}),
     # ---- 高频语义封装 ----
     Tool(name="clipboard_read", description="读取剪贴板文本", inputSchema={"type": "object", "properties": {}}),

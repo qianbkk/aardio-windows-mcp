@@ -31,7 +31,7 @@
 
 - 🚀 **开箱即用，零环境依赖运行**：核心能力编译为单文件原生 Win32 可执行文件 (`rpc-server.exe`，仅约 3MB)，无需安装庞大运行时。
 - 🔄 **服务按需自愈冷启动**：MCP 桥接层内置保活自愈机制；当底层服务未启动或被关闭时，Bridge 自动在 0.5 秒内静默拉起服务并重试，平时 0 资源占用。
-- ⚡ **万能自举动态 Eval**：提供 `/api/eval` 端点，支持在 aardio 运行时中动态执行任意 aardio 脚本，直接操纵 Win32 API、COM 组件、WMI、GDI+ 绘图、注册表等。
+- ⚡ **万能自举动态 Eval**：提供 `/api/eval` 端点，在 aardio 运行时中求值单个表达式，可调用已嵌入的 Win32、COM、WMI、GDI+ 等标准库；多语句须包装为立即调用的函数表达式（IIFE）。
 - 🖱️ **完整的 Computer Use 支持**：内置鼠标高精度移动、点击、拖拽、滚轮、键盘按键组合、全屏/窗口截图，满足各类桌面自动化与自动化编译需求。
 - 🔌 **全生态 Agent 兼容**：兼容 DeepSeek Harness (DSH)、Claude Desktop、Claude Code、Cursor、Windsurf、LibreChat 及各类原生 MCP 客户端。
 - 🛑 **完整按需生命周期**：新增 `server_stop` 工具，AI 任务完成后可主动退出后台释放全部资源，下次调用任意工具瞬时唤醒。
@@ -90,8 +90,10 @@ curl "http://127.0.0.1:42179/api/clipboard"
 # 2. 执行系统命令
 curl "http://127.0.0.1:42179/api/exec?cmd=ipconfig"
 
-# 3. 执行动态 aardio 代码 (调用 1000+ 标准库)
-curl "http://127.0.0.1:42179/api/eval?expr=time.now()"
+# 3. 求值单个 aardio 表达式（结果为 3）
+curl -G --data-urlencode "expr=1+2" "http://127.0.0.1:42179/api/eval"
+# 多语句须包装为 IIFE（结果为 3）
+curl -G --data-urlencode "expr=(function(){ var a=1; return a+2; })()" "http://127.0.0.1:42179/api/eval"
 
 # 4. 获取鼠标当前坐标
 curl "http://127.0.0.1:42179/api/mouse/pos"
@@ -99,6 +101,8 @@ curl "http://127.0.0.1:42179/api/mouse/pos"
 # 5. 查看全部 50 个端点清单与说明
 curl "http://127.0.0.1:42179/api/help"
 ```
+
+`expr` 只接受单个表达式。直接传入语句或函数体，如 `var a=1; return a+2;`，会返回 `ok=false` 和语法错误。请按上例包装为 IIFE，并用 `return` 返回结果；HTTP 调用须对 `expr` 做 URL 编码，以保留 `+`。
 
 ---
 
@@ -177,7 +181,7 @@ pnpm add file:D:/path/to/aardio_1/packages/dsh-plugin-aardio
 |---|---|---|
 | `list_endpoints` | 元工具 | 动态列出 RPC Server 当前所有 50+ 端点（支持新增端点热发现） |
 | `call_endpoint` | 元工具 | 通用调用任意 RPC 端点，无需改写 Bridge 即可扩充能力 |
-| `eval` | 万能钥匙 | 在 aardio 运行时中动态执行任意 aardio 表达式，可调度系统底层及全部 1000+ 标准库 |
+| `eval` | 万能钥匙 | 求值单个 aardio 表达式，可调用已嵌入的标准库；多语句须包装为 IIFE |
 | `server_stop` | 运维控制 | 主动停止后台服务以完全释放资源，下次调用工具时自动重新按需拉起 |
 | `clipboard_read` / `clipboard_write` | 剪贴板 | 读取 / 写入系统剪贴板内容 |
 | `exec` / `exec_bg` | 命令执行 | 同步或后台执行 cmd/PowerShell 进程并获取输出或 PID |

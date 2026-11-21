@@ -45,7 +45,7 @@
 | 阶段 | 任务 | 调用的核心端点 | 执行逻辑与闭环证据 |
 |:---|:---|:---|:---|
 | **Step 1: 代码审视** | 定位目标工程与源码 | `GET /api/find-files`<br>`GET /api/eval` | 通过高速文件遍历定位 `ext-tools.aardio`，利用 `eval` 中的 `string.load` 读取源码内容进上下文。 |
-| **Step 2: 动态热验证** | 验证新 aardio 代码正确性 | `GET /api/eval` | 在不重编译的情况下，直接将拟新增的函数体传入 `eval` 进行单元测试与异常排错（直接调用 1000+ 标准库）。 |
+| **Step 2: 动态热验证** | 验证新 aardio 代码正确性 | `GET /api/eval` | 在不重编译的情况下，将拟新增的函数体包装为立即调用的函数表达式（IIFE）传入 `eval`，通过 `return` 返回验证结果；只能调用已嵌入的标准库，不能直接传入多语句或函数体。 |
 | **Step 3: 源码写入** | 持久化更新源码文件 | `GET /api/eval` | 调用 `string.save(".../ext-tools.aardio", newCode)` 将新端点代码原子写入磁盘。 |
 | **Step 4: 独占锁释放** | 清除占用产物的旧进程 | `GET /api/processes`<br>`GET /api/processes/kill` | 扫描占用 `rpc-server.exe` 的旧进程 PID 并强制终止，确保编译目标文件句柄处于可写状态。 |
 | **Step 5: 无人值守编译** | 触发编译生成新 EXE | **双轨机制**：<br>① `GET /api/exec`<br>② **GUI 兜底原语** | **轨 ① (自动化管线)**：直接 `exec` 驱动 `rebuild-rpc-server.py`。<br>**轨 ② (原生 GUI 闭环)**：通过 `launch` 打开 IDE，`window/topmost` 锁定窗口，`clipboard/set` + `keyboard` 发送路径并按 F7 编译，`screenshot` 视觉确认。 |
@@ -61,7 +61,7 @@
 为了杜绝功能冗余，核心层 31 个端点按职责正交拆分为五大不可替代模块：
 
 ### 模块 A：自举动力源 (Bootstrap Engines) — 3 项
-- `GET /api/eval`：**运行时全权**。动态执行任意 aardio 语法与库，是整个系统动态无限拓展的终极底座。
+- `GET /api/eval`：**运行时全权**。求值单个 aardio 表达式，可调用已嵌入的标准库，是动态拓展的底座。例：`1+2` 或 `(function(){ var a=1; return a+2; })()` 均返回 `3`；直接传 `var a=1; return a+2;` 会返回 `ok=false` 和语法错误。
 - `GET /api/exec`：**操作系统全权（同步）**。同步捕获 shell 输出，执行诊断脚本或短时命令。
 - `GET /api/exec-bg`：**操作系统全权（异步）**。用于启动后台常驻任务或编译管线，避免 HTTP 超时挂起。
 

@@ -59,7 +59,7 @@
 ```
 GET http://127.0.0.1:42179/api/exec?cmd=ipconfig
 GET http://127.0.0.1:42179/api/screenshot?path=D:/tmp/shot.png
-GET http://127.0.0.1:42179/api/eval?expr=time.now()
+GET http://127.0.0.1:42179/api/eval?expr=1%2B2
 ```
 返回统一 JSON：`{"ok":true, ...}` 或 `{"ok":false, "error":"..."}`。
 
@@ -229,20 +229,24 @@ python -m venv .venv
 | `eval(expr)` | 万能钥匙：执行任意 aardio 表达式 |
 
 ### 4.2 eval 万能钥匙用法示例
+`expr` 必须是单个 aardio 表达式；多语句或函数体须包装为立即调用的函数表达式（IIFE），用 `return` 返回结果。
+
 ```text
-# 时间
-eval("time.now()")
+# 纯算术表达式：result 为 3
+eval("1+2")
 
-# 直接调标准库（EXE 已嵌入的库才能用，见 4.3）
-eval("import gdip; var bmp = gdip.bitmap('D:/a.png'); return bmp.width")
+# 多语句包装为 IIFE：result 为 3
+eval("(function(){ var a=1; return a+2; })()")
 
-# 组合能力：读文件 + 正则
-eval("var t = string.load('D:/log.txt'); return string.match(t, 'version=([0-9.]+)')")
+# 错误示例：直接传语句会返回 ok=false 和语法错误
+eval("var a=1; return a+2;")
 ```
+
+HTTP 调用应对 `expr` 做 URL 编码（例如用 `curl -G --data-urlencode`），避免 `+` 被解码为空格。
 
 ### 4.3 重要约束（务必知悉）
 1. **EXE 只嵌入顶部 import 的库**。`rpc-server.exe` 运行时只加载了 main.aardio 顶部
-   声明的库。eval 里 `import 一个未嵌入的库` 会失败或导致崩溃。
+   声明的库。即使在 IIFE 内使用 `import`，也不能加载未嵌入的库，否则会失败或导致崩溃。
    - 已嵌入：`fsys` `string` `table` `crypt.bin` `crypt.aes` `gdip`(及 bitmap/graphics/
      family/stringFormat) `inet.http` `sqlite` `wsock.tcp.client` `win.clip.bitmap` 等
      （完整清单见 main.aardio 顶部 import 段）。
@@ -280,6 +284,7 @@ eval("var t = string.load('D:/log.txt'); return string.match(t, 'version=([0-9.]
 |---|---|---|
 | 所有请求连接失败 | rpc-server.exe 没在运行 | 启动 EXE；`curl /api/health` 确认 |
 | 某端点返回 `{"ok":false}` | 参数缺/错 | 对照第 3 节参数名 |
+| eval 返回语法错误（如 `unexpected symbol`） | 直接传了语句或函数体 | 见 4.2，包装为 IIFE 并用 `return` 返回结果 |
 | eval 报错/无响应 | 库未嵌入 EXE | 见 4.3，加顶部 import 后重新发布 |
 | MCP 工具列表为空 | bridge 启动失败 | 手动运行脚本看报错；确认 mcp 包已装 |
 | 修改代码后不生效 | 没重新发布 EXE | 用 auto-publish-v3.ps1 自主发布 |
