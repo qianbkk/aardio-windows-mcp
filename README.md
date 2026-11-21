@@ -31,7 +31,7 @@
 
 - 🚀 **Zero Setup & Standalone**: Pre-compiled as a single native Win32 executable (`rpc-server.exe`, ~3MB). No heavyweight runtimes, SDKs, or installations required.
 - 🔄 **On-Demand Cold Start & Self-Healing**: The MCP Bridge automatically detects service health. If the server is offline or terminated, it starts silently in < 0.5s and retries seamlessly. Zero background memory footprint when not in use.
-- ⚡ **Turing-Complete Dynamic Eval**: The `/api/eval` endpoint dynamically runs arbitrary aardio scripts at runtime, granting AI immediate access to 1000+ Win32, COM, WMI, GDI+, and cryptographic libraries.
+- ⚡ **Turing-Complete Dynamic Eval**: The `/api/eval` endpoint evaluates a single aardio expression at runtime, with access to embedded Win32, COM, WMI, GDI+, and cryptographic libraries. Wrap multiple statements in an immediately invoked function expression (IIFE).
 - 🖱️ **Full Computer Use Primitives**: Precise absolute mouse coordinate control, left/right/double clicks, scrolling, drag-and-drop, keyboard hotkeys/combinations, and multi-monitor screen capture.
 - 🔌 **Universal Agent Compatibility**: Tested with DeepSeek Harness (DSH), Claude Desktop, Claude Code, Cursor, Windsurf, LibreChat, and standard MCP clients.
 - 🛑 **Complete Lifecycle Control**: Includes the `server_stop` tool, allowing AI to shut down background processes and free resources once automation tasks are finished.
@@ -90,8 +90,10 @@ curl "http://127.0.0.1:42179/api/clipboard"
 # 2. Execute command
 curl "http://127.0.0.1:42179/api/exec?cmd=ipconfig"
 
-# 3. Dynamic aardio evaluation (access 1000+ libraries)
-curl "http://127.0.0.1:42179/api/eval?expr=time.now()"
+# 3. Evaluate a single aardio expression (result: 3)
+curl -G --data-urlencode "expr=1+2" "http://127.0.0.1:42179/api/eval"
+# Multiple statements must be wrapped in an IIFE (result: 3)
+curl -G --data-urlencode "expr=(function(){ var a=1; return a+2; })()" "http://127.0.0.1:42179/api/eval"
 
 # 4. Get current cursor coordinates
 curl "http://127.0.0.1:42179/api/mouse/pos"
@@ -99,6 +101,8 @@ curl "http://127.0.0.1:42179/api/mouse/pos"
 # 5. List all 50 available endpoints
 curl "http://127.0.0.1:42179/api/help"
 ```
+
+`expr` accepts a single expression. Passing statements or a function body directly, such as `var a=1; return a+2;`, returns `ok=false` with a syntax error. Use an IIFE with `return` as shown above. URL-encode `expr` so `+` is preserved.
 
 ---
 
@@ -177,7 +181,7 @@ Add to `~/.claude.json`:
 |---|---|---|
 | `list_endpoints` | Meta | Dynamically inspect all 50+ available RPC endpoints at runtime |
 | `call_endpoint` | Meta | Generic caller for any RPC endpoint without modifying bridge code |
-| `eval` | Core | Execute arbitrary aardio expressions; access all 1000+ Win32/COM libraries |
+| `eval` | Core | Evaluate a single aardio expression; wrap multiple statements in an IIFE; use embedded libraries |
 | `server_stop` | Lifecycle | Stop background server to free memory; automatically relaunches on next tool call |
 | `clipboard_read` / `clipboard_write` | Clipboard | Read from or write text to the Windows system clipboard |
 | `exec` / `exec_bg` | Shell | Synchronous or non-blocking command execution returning output or PID |

@@ -2,7 +2,7 @@
 // ext-tools.aardio — 扩展工具模块 (模块二)
 // 挂载方式: 被 main.aardio 主线程用 loadcodex 加载, 顶层直接注册到全局 api 表
 // 用法: loadcodex(".../ext-tools.aardio")();  (api 必须是全局变量)
-// 端点清单 (全部只依赖标准库, 需在 main.aardio 的 onThreadCreated import):
+// 标准库依赖 (QR 读取另需可选 Python venv, 见 docs/AARDIO-BRIDGE.md):
 //   import gdip; import gdip.bitmap; import gdip.graphics; import gdip.family;
 //   import gdip.stringFormat; import crypt.aes; import wsock.tcp;
 //===================================================================
@@ -131,69 +131,177 @@
         }
     };
 
-    // 识别二维码: /api/qr/read?path=  (zbar 扩展库未装, 用在线识别 API)
+    // 识别本地二维码: /api/qr/read?path= (可选 Python + zxing-cpp + Pillow, 不联网)
     api["/api/qr/read"] = function(response, request){
         var path = request.get.path;
-        if(!path){ response.write(JSON.stringify({ok=false; error="需要 path"}, true)); return; }
+        if(!path){ response.write(JSON.stringify({ok=false; error="missing_path"; message="需要 path"}, true)); return; }
         try{
-            var http = inet.http();
-            var url = "https://api.qrserver.com/v1/read-qr-code/?fileurl=" ++ inet.url.encode("file:///" ++ path);
-            var body = http.get(url);
-            response.write(JSON.stringify({ok=true; raw=body}, true));
+            if(string.startWith(string.replaceLiteral(path, string.char(92), "/"), "//") || string.indexOf(path, "://")){
+                response.write(JSON.stringify({ok=false; error="invalid_path"; message="仅支持本地图片文件"}, true)); return;
+            }
+            if(!fsys.isFile(path)){
+                response.write(JSON.stringify({ok=false; error="file_not_found"}, true)); return;
+            }
+            // 固定程序目录下的可选 venv, 不从 PATH/CWD 或请求选择可执行文件。
+            var python = io.fullpath(io.joinpath(io._exedir, ".venv\Scripts\python.exe"));
+            if(!fsys.isFile(python)){
+                response.write(JSON.stringify({ok=false; error="decoder_unavailable"; message="在程序目录创建 .venv 并安装 zxing-cpp 和 Pillow，参见 docs/AARDIO-BRIDGE.md"}, true)); return;
+            }
+            // 源码随模块内嵌, 单独分发 dist 也不依赖仓库中的辅助脚本。
+            var decoder = /******
+import json
+import sys
+
+def decode():
+    try:
+        from PIL import Image, UnidentifiedImageError
+        import zxingcpp
+    except (ImportError, OSError):
+        return {"ok": False, "error": "decoder_unavailable", "message": "Install zxing-cpp and Pillow in the executable's .venv."}
+    try:
+        path = json.loads(sys.stdin.readline())["path"]
+        with Image.open(path) as image:
+            image.load()
+            codes = zxingcpp.read_barcodes(image.convert("RGB"), formats=zxingcpp.BarcodeFormat.QRCode, text_mode=zxingcpp.TextMode.Plain)
+    except FileNotFoundError:
+        return {"ok": False, "error": "file_not_found"}
+    except (UnidentifiedImageError, OSError, ValueError):
+        return {"ok": False, "error": "invalid_image"}
+    except Exception:
+        return {"ok": False, "error": "decode_failed"}
+    if not codes:
+        return {"ok": False, "error": "qr_not_found"}
+    texts = [code.text for code in codes]
+    return {"ok": True, "path": path, "text": texts[0], "texts": texts}
+
+print(json.dumps(decode(), ensure_ascii=True))
+******/;
+            var p = process.popen(python, {"-I"; "-X"; "utf8"; "-c"; decoder});
+            if(!p){ response.write(JSON.stringify({ok=false; error="decoder_unavailable"}, true)); return; }
+            p.codepage = 65001;
+            p.write(JSON.stringify({path=path}) ++ string.char(10));
+            var output = p.readAll();
+            p.wait();
+            var result = JSON.parse(output);
+            if(type(result) != "table" || type(result.ok) != "boolean"){
+                response.write(JSON.stringify({ok=false; error="decode_failed"}, true)); return;
+            }
+            response.write(JSON.stringify(result, true));
         } catch(e){
-            response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+            response.write(JSON.stringify({ok=false; error="decode_failed"; message=tostring(e)}, true));
         }
     };
 
     // ========== 3. RSS 阅读 (对应工具16) ==========
 
-    // 抓取并解析 RSS: /api/rss/fetch?url=&max=
+    // 抓取并解析 RSS/Atom: /api/rss/fetch?url=&max=
     // 注意: 辅助函数必须定义在端点函数内部 (端点跑在 worker 线程, 主线程 global 的
     //       自定义函数在 worker 线程不可见; 而内置库/标准库已由 onThreadCreated import)
     api["/api/rss/fetch"] = function(response, request){
         var url = request.get.url;
         var max = tonumber(request.get.max) || 20;
+        if(max < 0) max = 0;
         if(!url){ response.write(JSON.stringify({ok=false; error="缺少 url"}, true)); return; }
-        // 从 XML 块提取标签内容 (用 string.indexOf 字面查找, find 会把 <> 当模式元字符)
-        var xmlTag = function(xml, tag){
-            var openTag = "<" ++ tag ++ ">";
-            var closeTag = "</" ++ tag ++ ">";
-            var oPos = string.indexOf(xml, openTag);
-            if(!oPos) return "";
-            var cPos = string.indexOf(xml, closeTag, oPos + #openTag);
-            if(!cPos) return "";
-            // indexOf 返回的是 1-based 位置, openTag 从 oPos 开始占 #openTag 位, 内容从 oPos+#openTag 起, 到 cPos-1 止
-            var content = string.slice(xml, oPos + #openTag, cPos - 1);
-            // 清理 CDATA 包装
-            content = string.replaceLiteral(content, "<![CDATA[", "");
-            content = string.replaceLiteral(content, "]]>", "");
-            return content;
+
+        // 用 MSXML 读取节点文本, 兼容默认命名空间和前缀命名空间。
+        var nodeText = function(parent, xpath){
+            if(!parent) return "";
+            var node = parent.selectSingleNode(xpath);
+            if(!node) return "";
+            return node.text || "";
         };
+        // Atom 的 link 没有 rel 时语义就是 alternate; 有多个 link 时优先 alternate。
+        var atomLink = function(parent){
+            var links = parent.selectNodes("*[local-name()='link']");
+            var fallback = "";
+            var alternate = "";
+            var i = 0;
+            while(i < links.length){
+                var linkNode = links.item(i);
+                var href = linkNode.getAttribute("href");
+                var rel = linkNode.getAttribute("rel");
+                if(href){
+                    if(!fallback) fallback = href;
+                    if(!rel || rel == "alternate") alternate = href;
+                }
+                i++;
+            }
+            return alternate || fallback;
+        };
+        var fail = function(errorCode, message){
+            var result = {ok=false; error=errorCode};
+            if(message) result.message = message;
+            response.write(JSON.stringify(result, true));
+        };
+
         try{
             var http = inet.http();
             var xml = http.get(url);
-            if(!xml){ response.write(JSON.stringify({ok=false; error="抓取失败"}, true)); return; }
-            // 解析 channel 标题
-            var feedTitle = xmlTag(xml, "title");
-            // 解析 items: 用 string.indexOf 字面定位 <item>...</item> (find 会误匹配 /item)
-            var items = {};
-            var pos = 1;
-            while(#items < max){
-                var itemStart = string.indexOf(xml, "<item>", pos);
-                if(!itemStart) break;
-                var itemEnd = string.indexOf(xml, "</item>", itemStart + 6);
-                if(!itemEnd) break;
-                var itemXml = string.slice(xml, itemStart + 6, itemEnd - 1);
-                var title = xmlTag(itemXml, "title");
-                var link = xmlTag(itemXml, "link");
-                var desc = xmlTag(itemXml, "description");
-                var pubDate = xmlTag(itemXml, "pubDate");
-                table.push(items, {title=title; link=link; description=desc; pubDate=pubDate});
-                pos = itemEnd + 7;
+            if(!xml){ fail("抓取失败"); return; }
+
+            // 禁止异步加载、外部实体和 DTD，避免网络/本地实体解析。
+            var doc = com.CreateObject("Msxml2.DOMDocument.6.0");
+            doc.async = false;
+            doc.resolveExternals = false;
+            doc.setProperty("ProhibitDTD", true);
+            if(!doc.loadXML(xml)){
+                fail("xml_parse_failed", doc.parseError.reason || "XML 解析失败");
+                return;
+            }
+
+            var root = doc.documentElement;
+            if(!root){ fail("not_feed", "缺少根元素"); return; }
+            var rootName = root.baseName || root.nodeName;
+            var feedTitle = "";
+            var entryNodes = null;
+            var rssChannel = null;
+
+            if(rootName == "rss"){
+                rssChannel = root.selectSingleNode("*[local-name()='channel']");
+                if(!rssChannel){ fail("not_feed", "RSS 缺少 channel"); return; }
+                feedTitle = nodeText(rssChannel, "*[local-name()='title']");
+            } else if(rootName == "feed"){
+                entryNodes = root.selectNodes("*[local-name()='entry']");
+                feedTitle = nodeText(root, "*[local-name()='title']");
+            } else {
+                fail("not_feed", "根元素不是 RSS 或 Atom feed");
+                return;
+            }
+
+            // 保持 RSS 2.0 的响应表结构；Atom 字段映射到相同的条目字段。
+            var items = table.array();
+            var i = 0;
+            if(rssChannel){
+                var rssItems = rssChannel.selectNodes("*[local-name()='item']");
+                while(i < rssItems.length && #items < max){
+                    var rssItem = rssItems.item(i);
+                    table.push(items, {
+                        title=nodeText(rssItem, "*[local-name()='title']");
+                        link=nodeText(rssItem, "*[local-name()='link']");
+                        description=nodeText(rssItem, "*[local-name()='description']");
+                        pubDate=nodeText(rssItem, "*[local-name()='pubDate']")
+                    });
+                    i++;
+                }
+            } else {
+                while(i < entryNodes.length && #items < max){
+                    var entry = entryNodes.item(i);
+                    var description = nodeText(entry, "*[local-name()='summary']");
+                    if(description == "") description = nodeText(entry, "*[local-name()='content']");
+                    var pubDate = nodeText(entry, "*[local-name()='published']");
+                    if(pubDate == "") pubDate = nodeText(entry, "*[local-name()='updated']");
+                    table.push(items, {
+                        title=nodeText(entry, "*[local-name()='title']");
+                        link=atomLink(entry);
+                        description=description;
+                        pubDate=pubDate
+                    });
+                    i++;
+                }
             }
             response.write(JSON.stringify({ok=true; feed=feedTitle; count=#items; items=items}, true));
         } catch(e){
-            response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
+            fail("parse_failed", tostring(e));
         }
     };
 
@@ -268,6 +376,8 @@
         var portsStr = request.get.ports || "80,443,3389";
         var timeout = tonumber(request.get.timeout) || 1500;
         if(!host){ response.write(JSON.stringify({ok=false; error="缺少 host"}, true)); return; }
+        if(timeout <= 0){ response.write(JSON.stringify({ok=false; error="timeout 必须大于 0（毫秒）"}, true)); return; }
+        var tcp;
         try{
             var ports = {};
             var portList = string.split(portsStr, ",");
@@ -278,21 +388,20 @@
             var openList = {};
             var closedList = {};
             for(i, port in ports){
-                try{
-                    var tcp = wsock.tcp.client();
-                    tcp.settimeout(timeout);
-                    if(tcp.connect(host, port)){
-                        table.push(openList, port);
-                        tcp.close();
-                    } else {
-                        table.push(closedList, port);
-                    }
-                } catch(e){
+                tcp = wsock.tcp.client();
+                // connectTimeout 使用秒，接口 timeout 参数保持毫秒。
+                var connected = tcp.connectTimeout(host, port, timeout / 1000);
+                tcp.close();
+                tcp = null;
+                if(connected){
+                    table.push(openList, port);
+                } else {
                     table.push(closedList, port);
                 }
             }
             response.write(JSON.stringify({ok=true; host=host; open=openList; closed=closedList}, true));
         } catch(e){
+            if(tcp) tcp.close();
             response.write(JSON.stringify({ok=false; error=tostring(e)}, true));
         }
     };

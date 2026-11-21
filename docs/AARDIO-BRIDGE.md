@@ -59,7 +59,7 @@
 ```
 GET http://127.0.0.1:42179/api/exec?cmd=ipconfig
 GET http://127.0.0.1:42179/api/screenshot?path=D:/tmp/shot.png
-GET http://127.0.0.1:42179/api/eval?expr=time.now()
+GET http://127.0.0.1:42179/api/eval?expr=1%2B2
 ```
 返回统一 JSON：`{"ok":true, ...}` 或 `{"ok":false, "error":"..."}`。
 
@@ -176,13 +176,46 @@ GET http://127.0.0.1:42179/api/eval?expr=time.now()
 | `GET /api/img/convert?src=&dst=` | 图片格式转换 |
 | `GET /api/img/watermark?src=&dst=&text=&pos=` | 图片文字水印 |
 | `GET /api/qr/generate?text=&path=` | 生成二维码（PNG 文件） |
-| `GET /api/qr/read?path=` | 识别二维码 |
+| `GET /api/qr/read?path=` | 本地识别二维码（可选 Python venv，安装见下文） |
 | `GET /api/rss/fetch?url=&max=` | 抓取解析 RSS |
 | `GET /api/scan/ports?host=&ports=` | 端口扫描 |
 | `GET /api/vault/set?key=&value=&pass=` | 密码保险库-加密写入 |
 | `GET /api/vault/get?key=&pass=` | 密码保险库-解密读取 |
 | `GET /api/vault/list` | 保险库 key 列表 |
 | `GET /api/translate?text=&to=` | 文本翻译 |
+
+#### 本地 QR 读取的可选依赖
+
+`/api/qr/read?path=` 仅读取本地图片，不上传图片或路径，也不会回退到在线服务。
+解释器固定为正在运行的 EXE 所在目录（`io._exedir`）下的 `.venv\Scripts\python.exe`，
+不从 PATH、当前工作目录或请求参数选择程序。图片路径通过 UTF-8 标准输入传递。
+
+在目标机器分发后的 `dist` 目录内，用已安装的 Python 创建此可选环境：
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --only-binary=:all: zxing-cpp==3.1.1 Pillow==13.0.0
+```
+
+已用 Python 3.13、zxing-cpp 3.1.1、Pillow 13.0.0 验证。依赖安装完成后，解码本身无需联网。
+单独复制 `dist` 时，将 `rpc-server.exe` 和 `ext-tools.aardio` 放在同一目录，并在目标机按上述步骤
+创建 `.venv`；解码源码已内嵌模块，不依赖仓库的 `scripts`。虚拟环境依赖其基础 Python，
+不要把另一台机器的 `.venv` 当作可移植运行时直接分发。IDE 模式的 `io._exedir` 是解释器目录，
+部署时建议使用 EXE 目录中的独立环境。
+
+成功示例：`{"ok":true,"path":"C:/images/qr.png","text":"hello","texts":["hello"]}`。
+`text` 是首个二维码文本，`texts` 包含所有识别出的二维码，保留 Unicode 和换行。
+失败始终返回 `ok=false`，`error` 为 `missing_path`、`invalid_path`（URL/UNC）、
+`file_not_found`、`decoder_unavailable`（解释器或依赖未安装）、`invalid_image`、
+`qr_not_found` 或 `decode_failed`。普通条码不当作二维码返回。
+
+回归测试（用装好依赖的 Python，在仓库根目录运行）：
+
+```powershell
+.\projects\00-rpc-server\dist\.venv\Scripts\python.exe -I -X utf8 scripts/test-qr-read.py
+```
+
+测试图片保留于已忽略的 `scripts/_qr-read-check`，测试不会启动、停止或重载 RPC 服务。
 
 ---
 
@@ -196,20 +229,24 @@ GET http://127.0.0.1:42179/api/eval?expr=time.now()
 | `eval(expr)` | 万能钥匙：执行任意 aardio 表达式 |
 
 ### 4.2 eval 万能钥匙用法示例
+`expr` 必须是单个 aardio 表达式；多语句或函数体须包装为立即调用的函数表达式（IIFE），用 `return` 返回结果。
+
 ```text
-# 时间
-eval("time.now()")
+# 纯算术表达式：result 为 3
+eval("1+2")
 
-# 直接调标准库（EXE 已嵌入的库才能用，见 4.3）
-eval("import gdip; var bmp = gdip.bitmap('D:/a.png'); return bmp.width")
+# 多语句包装为 IIFE：result 为 3
+eval("(function(){ var a=1; return a+2; })()")
 
-# 组合能力：读文件 + 正则
-eval("var t = string.load('D:/log.txt'); return string.match(t, 'version=([0-9.]+)')")
+# 错误示例：直接传语句会返回 ok=false 和语法错误
+eval("var a=1; return a+2;")
 ```
+
+HTTP 调用应对 `expr` 做 URL 编码（例如用 `curl -G --data-urlencode`），避免 `+` 被解码为空格。
 
 ### 4.3 重要约束（务必知悉）
 1. **EXE 只嵌入顶部 import 的库**。`rpc-server.exe` 运行时只加载了 main.aardio 顶部
-   声明的库。eval 里 `import 一个未嵌入的库` 会失败或导致崩溃。
+   声明的库。即使在 IIFE 内使用 `import`，也不能加载未嵌入的库，否则会失败或导致崩溃。
    - 已嵌入：`fsys` `string` `table` `crypt.bin` `crypt.aes` `gdip`(及 bitmap/graphics/
      family/stringFormat) `inet.http` `sqlite` `wsock.tcp.client` `win.clip.bitmap` 等
      （完整清单见 main.aardio 顶部 import 段）。
@@ -247,6 +284,7 @@ eval("var t = string.load('D:/log.txt'); return string.match(t, 'version=([0-9.]
 |---|---|---|
 | 所有请求连接失败 | rpc-server.exe 没在运行 | 启动 EXE；`curl /api/health` 确认 |
 | 某端点返回 `{"ok":false}` | 参数缺/错 | 对照第 3 节参数名 |
+| eval 返回语法错误（如 `unexpected symbol`） | 直接传了语句或函数体 | 见 4.2，包装为 IIFE 并用 `return` 返回结果 |
 | eval 报错/无响应 | 库未嵌入 EXE | 见 4.3，加顶部 import 后重新发布 |
 | MCP 工具列表为空 | bridge 启动失败 | 手动运行脚本看报错；确认 mcp 包已装 |
 | 修改代码后不生效 | 没重新发布 EXE | 用 auto-publish-v3.ps1 自主发布 |
