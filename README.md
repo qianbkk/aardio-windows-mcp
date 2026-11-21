@@ -106,8 +106,9 @@ curl "http://127.0.0.1:42179/api/help"
 
 Install Python dependencies (Python 3.10+ recommended):
 ```bash
-pip install mcp
+pip install -r scripts/requirements.txt
 ```
+The bridge works with both **mcp 1.x** and **mcp 2.x**.
 
 ### 1. Claude Desktop / Cursor / Windsurf
 Add to `claude_desktop_config.json` or `mcp.json`:

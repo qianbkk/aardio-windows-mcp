@@ -106,8 +106,9 @@ curl "http://127.0.0.1:42179/api/help"
 
 安装 Python 依赖（推荐 Python 3.10+）：
 ```bash
-pip install mcp
+pip install -r scripts/requirements.txt
 ```
+Bridge 同时兼容 **mcp 1.x** 与 **mcp 2.x**。
 
 ### 1. DeepSeek Harness (DSH)
 

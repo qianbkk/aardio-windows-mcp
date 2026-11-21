@@ -1,0 +1,5 @@
+# MCP SDK requirement for the bridge.
+#
+# The bridge supports both the mcp 1.x decorator based low level API and the
+# mcp 2.x constructor based low level API, so both ranges are accepted here.
+mcp>=1.30,<3
